@@ -89,8 +89,24 @@ export default function CustomerDetail() {
             <div className="value">{customer.dateOfBirth || "—"}</div>
           </div>
           <div>
+            <div className="label">Email</div>
+            <div className="value">{customer.email || "—"}</div>
+          </div>
+          <div>
+            <div className="label">Phone</div>
+            <div className="value">{customer.phone || "—"}</div>
+          </div>
+          <div>
+            <div className="label">Mobile</div>
+            <div className="value">{customer.mobile || "—"}</div>
+          </div>
+          <div>
             <div className="label">Street address</div>
             <div className="value">{customer.streetAddress || "—"}</div>
+          </div>
+          <div>
+            <div className="label">Suburb</div>
+            <div className="value">{customer.suburb || "—"}</div>
           </div>
           <div>
             <div className="label">State</div>
