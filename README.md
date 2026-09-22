@@ -12,10 +12,13 @@ A simple CRM for a tour company, built on Cloudflare Workers with D1.
 
 ## Data model
 
-- **customers** — title, first name, last name, date of birth, street address, state, postcode, dietaries
+- **customers** — title, first name, last name, date of birth, phone, mobile, street address, suburb, state, postcode, dietaries
 - **tours** — tour name, departure/return dates, `num_days` (SQLite generated column, computed automatically), price, total passengers
 - **tasks** — linked to a customer, free-text multi-line task
-- **bookings** — links a customer to a tour (many-to-many join table)
+- **rooms** — a room on a tour, typed Single / Double / Twin / Triple (capacity 1 / 2 / 2 / 3)
+- **bookings** — links a customer to a tour (many-to-many join table); optional `room_id` puts the passenger in a room
+
+Tours also store `seats` and `num_rooms`; seats left and rooms left are calculated by the API from live booking and room counts.
 
 The D1 database (`mini-crm`) already exists in the connected Cloudflare account with these tables live. `wrangler.jsonc` points at it by `database_id`.
 
@@ -26,7 +29,13 @@ npm install
 npm run dev
 ```
 
-This runs Vite + Miniflare together (via `@cloudflare/vite-plugin`), so the Worker API and D1 binding work locally against the same production database. If you'd rather develop against a local copy of the schema, create a `.dev.vars`-based local D1 database with `wrangler d1 execute` and update the binding.
+This runs Vite + Miniflare, which uses a **local** D1 database (not the live one). Create its tables once with:
+
+```bash
+npm run db:local
+```
+
+`schema.sql` mirrors the live schema. Schema changes to the live database are made separately.
 
 ## Deploy
 
