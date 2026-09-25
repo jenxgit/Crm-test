@@ -71,11 +71,47 @@ export const rooms = sqliteTable("rooms", {
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
 });
 
+export const invoices = sqliteTable("invoices", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  invoiceNumber: text("invoice_number").notNull().unique(),
+  primaryContactId: integer("primary_contact_id"), // the "To:" contact on the receipt
+  dueDate: text("due_date"),
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+  updatedAt: text("updated_at").default(sql`(datetime('now'))`),
+});
+
+// Manual extra charge/credit lines on an invoice (e.g. a cancellation fee), on top of the
+// passengers' computed tour cost. amount can be negative for a credit/discount.
+export const invoiceItems = sqliteTable("invoice_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  invoiceId: integer("invoice_id").notNull(),
+  description: text("description").notNull(),
+  amount: real("amount").notNull(),
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+  updatedAt: text("updated_at").default(sql`(datetime('now'))`),
+});
+
 export const bookings = sqliteTable("bookings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   customerId: integer("customer_id").notNull(),
   tourId: integer("tour_id").notNull(),
   roomId: integer("room_id"), // null = not yet assigned to a room
+  invoiceId: integer("invoice_id"), // null = not yet invoiced
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+  updatedAt: text("updated_at").default(sql`(datetime('now'))`),
+});
+
+// The bank ledger: every payment received and every transfer out (negative amount).
+// Summing amount in date order should match the bank account balance.
+export const payments = sqliteTable("payments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  invoiceId: integer("invoice_id"), // set for a customer payment/refund
+  tourId: integer("tour_id"), // set for a transfer out, or to tag a customer payment's tour
+  amount: real("amount").notNull(), // positive = money in, negative = money out
+  method: text("method"), // CH, DD, CC, CS, BC, BANK, PP, CD, QD, MO, CREDIT, etc. (free text)
+  description: text("description"),
+  receivedDate: text("received_date"),
+  bankedDate: text("banked_date"), // when it actually hit the bank, for reconciling
   createdAt: text("created_at").default(sql`(datetime('now'))`),
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
 });
@@ -89,3 +125,9 @@ export type NewTask = typeof tasks.$inferInsert;
 export type Room = typeof rooms.$inferSelect;
 export type Booking = typeof bookings.$inferSelect;
 export type NewBooking = typeof bookings.$inferInsert;
+export type Invoice = typeof invoices.$inferSelect;
+export type NewInvoice = typeof invoices.$inferInsert;
+export type InvoiceItem = typeof invoiceItems.$inferSelect;
+export type NewInvoiceItem = typeof invoiceItems.$inferInsert;
+export type Payment = typeof payments.$inferSelect;
+export type NewPayment = typeof payments.$inferInsert;

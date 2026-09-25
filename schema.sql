@@ -54,11 +54,47 @@ CREATE TABLE IF NOT EXISTS rooms (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS invoices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_number TEXT NOT NULL UNIQUE,
+  primary_contact_id INTEGER REFERENCES customers(id), -- the "To:" contact on the receipt
+  due_date TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Manual extra charge/credit lines on an invoice (e.g. a cancellation fee), on top of the
+-- passengers' computed tour cost. amount can be negative for a credit/discount.
+CREATE TABLE IF NOT EXISTS invoice_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+  description TEXT NOT NULL,
+  amount REAL NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS bookings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   customer_id INTEGER NOT NULL REFERENCES customers(id),
   tour_id INTEGER NOT NULL REFERENCES tours(id),
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
-  room_id INTEGER REFERENCES rooms(id)
+  room_id INTEGER REFERENCES rooms(id),
+  invoice_id INTEGER REFERENCES invoices(id)
+);
+
+-- The bank ledger: every payment received and every transfer out (negative amount).
+-- Summing amount in date order should match the bank account balance.
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER REFERENCES invoices(id), -- set for a customer payment/refund
+  tour_id INTEGER REFERENCES tours(id), -- set for a transfer out, or to tag a customer payment's tour
+  amount REAL NOT NULL, -- positive = money in, negative = money out
+  method TEXT, -- CH, DD, CC, CS, BC, BANK, PP, CD, QD, MO, CREDIT, etc. (free text)
+  description TEXT,
+  received_date TEXT,
+  banked_date TEXT, -- when it actually hit the bank, for reconciling against a statement
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
 );

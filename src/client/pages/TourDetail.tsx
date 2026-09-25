@@ -17,8 +17,8 @@ const cell: React.CSSProperties = { padding: "6px 8px", whiteSpace: "nowrap", fo
 const headCell: React.CSSProperties = { ...cell, textAlign: "left", color: "#8B8D97", fontWeight: 600 };
 const calcCell: React.CSSProperties = { ...cell, background: "#FAFAF8", color: "#6B6D78" };
 
-// R.Type, Rm, 12 customer fields, Cost, Actions, room-delete.
-const COLS = 17;
+// R.Type, Rm, 12 customer fields, Cost, Invoice, Actions, room-delete.
+const COLS = 18;
 const roomBorder = "2px solid #B9BBC6";
 const rowBorder = "1px solid #EEEEE9";
 
@@ -31,6 +31,93 @@ function TrashIcon() {
       <path d="M14 11v6" />
       <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
     </svg>
+  );
+}
+
+// Lets a passenger row join an existing invoice on this tour, or start a new one.
+function InvoiceCell({
+  p,
+  tourInvoices,
+  onCreate,
+  onAttach,
+  onDetach,
+}: {
+  p: Passenger;
+  tourInvoices: { id: number; invoiceNumber: string }[];
+  onCreate: (bookingId: number, invoiceNumber: string) => void;
+  onAttach: (bookingId: number, invoiceId: number) => void;
+  onDetach: (bookingId: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [choice, setChoice] = useState("new");
+  const [newNumber, setNewNumber] = useState("");
+
+  if (p.invoiceId != null) {
+    return (
+      <td style={cell}>
+        <Link to={`/invoices/${p.invoiceId}`}>{p.invoiceNumber}</Link>{" "}
+        <button
+          className="btn btn-secondary"
+          style={{ padding: "0 6px", fontSize: 11 }}
+          title="Remove from invoice"
+          onClick={() => onDetach(p.bookingId)}
+        >
+          ×
+        </button>
+      </td>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <td style={cell}>
+        <button className="btn btn-secondary" style={{ padding: "1px 6px", fontSize: 11 }} onClick={() => setEditing(true)}>
+          + Invoice
+        </button>
+      </td>
+    );
+  }
+
+  const confirm = () => {
+    if (choice === "new") {
+      if (!newNumber.trim()) return;
+      onCreate(p.bookingId, newNumber.trim());
+    } else {
+      onAttach(p.bookingId, Number(choice));
+    }
+    setEditing(false);
+    setNewNumber("");
+    setChoice("new");
+  };
+
+  return (
+    <td style={cell}>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <select value={choice} onChange={(e) => setChoice(e.target.value)} style={{ fontSize: 11 }}>
+          <option value="new">New invoice…</option>
+          {tourInvoices.map((inv) => (
+            <option key={inv.id} value={inv.id}>
+              Join {inv.invoiceNumber}
+            </option>
+          ))}
+        </select>
+        {choice === "new" && (
+          <input
+            autoFocus
+            placeholder="Invoice #"
+            value={newNumber}
+            onChange={(e) => setNewNumber(e.target.value)}
+            style={{ width: 90, fontSize: 11 }}
+          />
+        )}
+        <button className="btn btn-primary" style={{ padding: "1px 6px", fontSize: 11 }} onClick={confirm}>
+          ✓
+        </button>
+        <button className="btn btn-secondary" style={{ padding: "1px 6px", fontSize: 11 }} onClick={() => setEditing(false)}>
+          ×
+        </button>
+      </div>
+    </td>
   );
 }
 
@@ -204,6 +291,18 @@ export default function TourDetail() {
       .filter((r) => r.id !== excludeRoomId)
       .map((r) => ({ id: r.id, label: `Room ${tour.rooms.indexOf(r) + 1} (${r.roomType}, ${r.passengers.length}/${r.capacity})` }));
 
+  // Invoices already used on this tour, so a passenger can join one instead of starting a new one.
+  const tourInvoicesMap = new Map<number, string>();
+  tour.passengers.forEach((p) => {
+    if (p.invoiceId != null && p.invoiceNumber) tourInvoicesMap.set(p.invoiceId, p.invoiceNumber);
+  });
+  const tourInvoices = [...tourInvoicesMap.entries()].map(([invId, invoiceNumber]) => ({ id: invId, invoiceNumber }));
+
+  const createInvoice = (bookingId: number, invoiceNumber: string) =>
+    act(() => api.invoices.create({ invoiceNumber, bookingIds: [bookingId] }));
+  const attachInvoice = (bookingId: number, invId: number) => act(() => api.bookings.setInvoice(bookingId, invId));
+  const detachInvoice = (bookingId: number) => act(() => api.bookings.setInvoice(bookingId, null));
+
   const stat = (label: string, value: React.ReactNode) => (
     <div>
       <div className="label" style={{ fontSize: 12, color: "#8B8D97" }}>{label}</div>
@@ -312,7 +411,7 @@ export default function TourDetail() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              {["R.Type", "Rm", "Title", "Surname", "Name", "Dietary", "Email", "Phone", "Mobile", "Address", "Suburb", "State", "PC", "DOB", "Cost", "", ""].map((h) => (
+              {["R.Type", "Rm", "Title", "Surname", "Name", "Dietary", "Email", "Phone", "Mobile", "Address", "Suburb", "State", "PC", "DOB", "Cost", "", "Invoice", ""].map((h) => (
                 <th key={h} style={headCell}>
                   {h}
                 </th>
@@ -375,16 +474,25 @@ export default function TourDetail() {
                     </>
                   )}
                   {p ? (
-                    <PassengerCells
-                      p={p}
-                      cost={passengerCost(room.roomType)}
-                      onRemove={() => act(() => api.bookings.remove(p.bookingId))}
-                      onMove={(roomId) => act(() => api.bookings.setRoom(p.bookingId, roomId))}
-                      moveTargets={targetsFor(room.id)}
-                      canUnassign
-                      edit={edit}
-                      onSave={saveField}
-                    />
+                    <>
+                      <PassengerCells
+                        p={p}
+                        cost={passengerCost(room.roomType)}
+                        onRemove={() => act(() => api.bookings.remove(p.bookingId))}
+                        onMove={(roomId) => act(() => api.bookings.setRoom(p.bookingId, roomId))}
+                        moveTargets={targetsFor(room.id)}
+                        canUnassign
+                        edit={edit}
+                        onSave={saveField}
+                      />
+                      <InvoiceCell
+                        p={p}
+                        tourInvoices={tourInvoices}
+                        onCreate={createInvoice}
+                        onAttach={attachInvoice}
+                        onDetach={detachInvoice}
+                      />
+                    </>
                   ) : (
                     <td colSpan={COLS - 3} style={{ ...cell, color: "#8B8D97" }}>
                       Empty room
@@ -437,6 +545,13 @@ export default function TourDetail() {
                   canUnassign={false}
                   edit={edit}
                   onSave={saveField}
+                />
+                <InvoiceCell
+                  p={p}
+                  tourInvoices={tourInvoices}
+                  onCreate={createInvoice}
+                  onAttach={attachInvoice}
+                  onDetach={detachInvoice}
                 />
                 <td />
               </tr>

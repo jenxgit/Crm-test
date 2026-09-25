@@ -2,8 +2,11 @@ import { useState } from "react";
 import { NavLink } from "react-router-dom";
 
 const navItems = [
+  { to: "/dashboard", label: "Dashboard" },
   { to: "/customers", label: "Customers" },
   { to: "/tours", label: "Tours" },
+  { to: "/invoices", label: "Invoices" },
+  { to: "/payments", label: "Payments" },
   { to: "/tasks", label: "Tasks" },
 ];
 

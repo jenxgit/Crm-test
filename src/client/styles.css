@@ -352,3 +352,10 @@ textarea { resize: vertical; min-height: 70px; }
 
   .modal-actions .btn { width: 100%; justify-content: center; }
 }
+
+@media print {
+  .sidebar, .no-print { display: none !important; }
+  .app-content { padding: 0 !important; }
+  .card { border: none !important; box-shadow: none !important; }
+  body { background: #fff !important; }
+}
