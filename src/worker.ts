@@ -1,14 +1,19 @@
 import { Hono } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import { eq, sql, getTableColumns, inArray, isNotNull } from "drizzle-orm";
+import { requireAccess, type AccessEnv } from "./access";
+import { dumpDatabase, runScheduledBackup, type BackupEnv } from "./backup";
 import { customers, tours, tasks, bookings, rooms, ROOM_TYPES, invoices, payments, invoiceItems } from "./db/schema";
 
-export interface Env {
+export interface Env extends AccessEnv, BackupEnv {
   DB: D1Database;
   ASSETS: Fetcher;
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Every API route requires a valid Cloudflare Access login.
+app.use("/api/*", requireAccess);
 
 const db = (env: Env) => drizzle(env.DB);
 
@@ -795,4 +800,17 @@ app.get("/api/dashboard", async (c) => {
   });
 });
 
-export default app;
+app.get("/api/backup", async (c) => {
+  const dump = await dumpDatabase(c.env);
+  const name = `mini-crm-backup-${dump.exportedAt.slice(0, 10)}.json`;
+  return new Response(JSON.stringify(dump, null, 2), {
+    headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename="${name}"` },
+  });
+});
+
+export default {
+  fetch: app.fetch,
+  scheduled: (_event: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil(runScheduledBackup(env));
+  },
+} satisfies ExportedHandler<Env>;

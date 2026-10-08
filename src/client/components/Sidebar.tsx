@@ -44,6 +44,9 @@ export default function Sidebar() {
             {item.label}
           </NavLink>
         ))}
+        <a className="sidebar-link" href="/api/backup" download>
+          Download backup
+        </a>
       </nav>
     </div>
   );

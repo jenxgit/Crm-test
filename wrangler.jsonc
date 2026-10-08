@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "mini-crm",
+  "name": "crm-test",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -14,6 +14,14 @@
   "assets": {
     "not_found_handling": "single-page-application"
   },
+  // Cloudflare Access check on /api/*. Set these as secrets (not vars, so deploys don't overwrite them):
+  //   npx wrangler secret put CF_ACCESS_TEAM_DOMAIN   ("<team>.cloudflareaccess.com")
+  //   npx wrangler secret put CF_ACCESS_AUD           (the Access app's AUD tag)
+  // Until both are set, the deployed API answers 503 (localhost is exempt).
+  // Nightly backup to R2. To enable: `npx wrangler r2 bucket create mini-crm-backups`,
+  // then uncomment these two blocks and redeploy.
+  // "r2_buckets": [{ "binding": "BACKUP_BUCKET", "bucket_name": "mini-crm-backups" }],
+  // "triggers": { "crons": ["0 16 * * *"] },
   "observability": {
     "enabled": true
   }
