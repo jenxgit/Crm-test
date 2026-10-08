@@ -14,6 +14,18 @@
   "assets": {
     "not_found_handling": "single-page-application"
   },
+  // Cloudflare Access check on /api/*. Set these, then deploy:
+  //   CF_ACCESS_TEAM_DOMAIN = "<team>.cloudflareaccess.com"
+  //   CF_ACCESS_AUD = the Access application's "Application Audience (AUD) Tag"
+  // Until both are set, the deployed API answers 503 (localhost is exempt).
+  "vars": {
+    "CF_ACCESS_TEAM_DOMAIN": "",
+    "CF_ACCESS_AUD": ""
+  },
+  // Nightly backup to R2. To enable: `npx wrangler r2 bucket create mini-crm-backups`,
+  // then uncomment these two blocks and redeploy.
+  // "r2_buckets": [{ "binding": "BACKUP_BUCKET", "bucket_name": "mini-crm-backups" }],
+  // "triggers": { "crons": ["0 16 * * *"] },
   "observability": {
     "enabled": true
   }

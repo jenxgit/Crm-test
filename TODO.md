@@ -9,7 +9,7 @@
 
 ## Also worth doing
 - [ ] **Deploy + import to live.** Everything below the schema is local only. Live D1 has the tables and columns, but no tours, customers, bookings or rooms. Decide when to load the 2023/2024 data live, then `npm run deploy` (needs `npx wrangler login`).
-- [ ] **Login / access control before deploying.** The app has no authentication and holds addresses, DOBs and emails. Put it behind Cloudflare Access (or similar) first.
+- [x] **Login / access control.** Cloudflare Access is in front of the app, and the Worker now verifies the Access JWT on `/api/*` (`src/access.ts`). Before deploying, set `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` in `wrangler.jsonc`, or the live API answers 503.
 - [ ] Edit tour details in the UI (code, dates, price, single supp, seats, rooms). Currently only settable when a tour is created.
 - [ ] Way to delete a room in the UI (the button was removed; the API still supports it)
 - [ ] Days calculation: app shows return minus departure (e.g. 13); the sheet counts both days (14). Decide which to use.
@@ -20,6 +20,6 @@
 - [ ] Passenger count mismatches vs the cover sheet: DK-300723, FR-220823, WA-040923, ML-291023, NF-250923 (3 extra unassigned McNamara rows), TA-081123, MP-091023
 - [ ] Possible duplicate customers where two people share a name and have no DOB (they were merged on import)
 - [ ] Import older years (2014-2022) if wanted
-- [ ] Backups / export (CSV or Excel) for the live database
-- [ ] Wrangler compatibility-date warning and 13 npm audit findings
+- [x] Backups: "Download backup" in the sidebar (`/api/backup`, full JSON). Nightly R2 backup is coded but off until the bucket is created (see `wrangler.jsonc`). D1 Time Travel also covers the last 30 days.
+- [x] Wrangler 4, vite plugin 1, drizzle-orm 0.45, react-router 7, SheetJS 0.20.3 (from cdn.sheetjs.com, as npm has no fixed version). Remaining `npm audit` items (sharp, esbuild) are dev-tooling only.
 - [ ] Local dev DB has a leftover test customer named "a a" (customer id 1)
