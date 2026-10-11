@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { drizzle } from "drizzle-orm/d1";
-import { eq, sql, getTableColumns, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, sql, getTableColumns, inArray, isNotNull } from "drizzle-orm";
 import { requireAccess, type AccessEnv } from "./access";
 import { dumpDatabase, runScheduledBackup, type BackupEnv } from "./backup";
-import { customers, tours, tasks, bookings, rooms, ROOM_TYPES, invoices, payments, invoiceItems } from "./db/schema";
+import { customers, tours, tasks, bookings, rooms, ROOM_TYPES, invoices, payments, invoiceItems, paymentAllocations, tourStaff, STAFF_ROLES, tourWaitlist } from "./db/schema";
 
 export interface Env extends AccessEnv, BackupEnv {
   DB: D1Database;
@@ -47,8 +47,9 @@ const tourWithCounts = (env: Env) =>
   db(env)
     .select({
       ...getTableColumns(tours),
-      passengerCount: sql<number>`(SELECT COUNT(*) FROM bookings WHERE bookings.tour_id = tours.id)`,
-      roomCount: sql<number>`(SELECT COUNT(*) FROM rooms WHERE rooms.tour_id = tours.id)`,
+      passengerCount: sql<number>`(SELECT COUNT(*) FROM bookings WHERE bookings.tour_id = tours.id AND bookings.status = 'active')`,
+      // Passenger rooms plus one room for each hostess/driver.
+      roomCount: sql<number>`(SELECT COUNT(*) FROM rooms WHERE rooms.tour_id = tours.id) + (SELECT COUNT(*) FROM tour_staff WHERE tour_staff.tour_id = tours.id)`,
     })
     .from(tours);
 
@@ -134,6 +135,7 @@ app.put("/api/customers/:id", async (c) => {
 
 app.delete("/api/customers/:id", async (c) => {
   const id = Number(c.req.param("id"));
+  await db(c.env).delete(tourWaitlist).where(eq(tourWaitlist.customerId, id));
   await db(c.env).delete(customers).where(eq(customers.id, id));
   return c.body(null, 204);
 });
@@ -150,12 +152,17 @@ app.get("/api/tours/:id", async (c) => {
   const [tour] = await tourWithCounts(c.env).where(eq(tours.id, id));
   if (!tour) return c.json({ error: "Not found" }, 404);
 
-  const passengers = await db(c.env)
+  const passengerRows = await db(c.env)
     .select({
       bookingId: bookings.id,
       roomId: bookings.roomId,
       invoiceId: bookings.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
+      status: bookings.status,
+      cancelledDate: bookings.cancelledDate,
+      cancelNote: bookings.cancelNote,
+      cancelledRoomId: bookings.cancelledRoomId,
+      cancelledRoomType: bookings.cancelledRoomType,
       customerId: customers.id,
       title: customers.title,
       firstName: customers.firstName,
@@ -176,7 +183,26 @@ app.get("/api/tours/:id", async (c) => {
     .where(eq(bookings.tourId, id))
     .orderBy(bookings.id);
 
-  const tourRooms = await db(c.env).select().from(rooms).where(eq(rooms.tourId, id)).orderBy(rooms.id);
+  // Each passenger's own share of their invoice: payments allocated to them and what they still owe.
+  const shares = await computePassengerShares(c.env);
+  const everyone = passengerRows.map((p) => {
+    const share = shares.get(p.bookingId);
+    return { ...p, paymentsTotal: share?.paid ?? null, balanceDue: share?.balance ?? null };
+  });
+  // Cancelled passengers are listed separately; the room grid and seat counts are active only.
+  const passengers = everyone.filter((p) => p.status === "active");
+  const cancellations = everyone
+    .filter((p) => p.status === "cancelled")
+    .map((p) => ({
+      ...p,
+      // Who they were sharing with, taken from the room they left (still travelling).
+      sharedWith: passengers
+        .filter((o) => p.cancelledRoomId != null && o.roomId === p.cancelledRoomId)
+        .map((o) => `${o.firstName} ${o.lastName}`),
+    }))
+    .sort((a, b) => (a.cancelledDate ?? "").localeCompare(b.cancelledDate ?? "") || a.bookingId - b.bookingId);
+
+  const tourRooms =await db(c.env).select().from(rooms).where(eq(rooms.tourId, id)).orderBy(rooms.id);
   const roomsWithPassengers = tourRooms.map((r) => ({
     id: r.id,
     roomType: r.roomType,
@@ -185,7 +211,28 @@ app.get("/api/tours/:id", async (c) => {
   }));
   const unassigned = passengers.filter((p) => p.roomId == null);
 
-  return c.json({ ...withAvailability(tour), rooms: roomsWithPassengers, unassigned, passengers });
+  const staff = await db(c.env).select().from(tourStaff).where(eq(tourStaff.tourId, id)).orderBy(tourStaff.id);
+
+  const waitlist = await db(c.env)
+    .select({
+      id: tourWaitlist.id,
+      customerId: customers.id,
+      firstName: customers.firstName,
+      lastName: customers.lastName,
+      phone: customers.phone,
+      mobile: customers.mobile,
+      email: customers.email,
+      dateAdded: tourWaitlist.dateAdded,
+      pax: tourWaitlist.pax,
+      note: tourWaitlist.note,
+      done: tourWaitlist.done,
+    })
+    .from(tourWaitlist)
+    .innerJoin(customers, eq(tourWaitlist.customerId, customers.id))
+    .where(eq(tourWaitlist.tourId, id))
+    .orderBy(tourWaitlist.dateAdded, tourWaitlist.id);
+
+  return c.json({ ...withAvailability(tour), rooms: roomsWithPassengers, unassigned, passengers, staff, waitlist, cancellations });
 });
 
 app.post("/api/tours", async (c) => {
@@ -236,8 +283,85 @@ app.put("/api/tours/:id", async (c) => {
   return c.json(updated);
 });
 
+// Hostess / driver for a tour. Each one counts as a room on the tour, not a passenger seat.
+app.post("/api/tour-staff", async (c) => {
+  const body = await c.req.json();
+  if (!STAFF_ROLES.includes(body.role)) return c.json({ error: "Role must be Hostess or Driver" }, 400);
+  const [created] = await db(c.env)
+    .insert(tourStaff)
+    .values({ tourId: Number(body.tourId), role: body.role, name: String(body.name ?? "").trim() || null })
+    .returning();
+  return c.json(created, 201);
+});
+
+app.put("/api/tour-staff/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  if (body.role !== undefined && !STAFF_ROLES.includes(body.role)) {
+    return c.json({ error: "Role must be Hostess or Driver" }, 400);
+  }
+  const [updated] = await db(c.env)
+    .update(tourStaff)
+    .set({
+      role: body.role,
+      name: body.name !== undefined ? String(body.name).trim() || null : undefined,
+    })
+    .where(eq(tourStaff.id, id))
+    .returning();
+  if (!updated) return c.json({ error: "Not found" }, 404);
+  return c.json(updated);
+});
+
+app.delete("/api/tour-staff/:id", async (c) => {
+  await db(c.env).delete(tourStaff).where(eq(tourStaff.id, Number(c.req.param("id"))));
+  return c.body(null, 204);
+});
+
+// Waitlist entries: who is waiting for a seat, how many, and when they asked.
+const cleanPax = (v: unknown) => Math.max(1, Math.floor(Number(v) || 1));
+
+app.post("/api/tour-waitlist", async (c) => {
+  const body = await c.req.json();
+  if (!body.tourId || !body.customerId) return c.json({ error: "Tour and contact are required" }, 400);
+  const [created] = await db(c.env)
+    .insert(tourWaitlist)
+    .values({
+      tourId: Number(body.tourId),
+      customerId: Number(body.customerId),
+      dateAdded: body.dateAdded || new Date().toISOString().slice(0, 10),
+      pax: cleanPax(body.pax),
+      note: String(body.note ?? "").trim() || null,
+    })
+    .returning();
+  return c.json(created, 201);
+});
+
+app.put("/api/tour-waitlist/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  const [updated] = await db(c.env)
+    .update(tourWaitlist)
+    .set({
+      dateAdded: body.dateAdded || undefined,
+      pax: body.pax !== undefined ? cleanPax(body.pax) : undefined,
+      note: body.note !== undefined ? String(body.note).trim() || null : undefined,
+      done: body.done !== undefined ? Boolean(body.done) : undefined,
+    })
+    .where(eq(tourWaitlist.id, id))
+    .returning();
+  if (!updated) return c.json({ error: "Not found" }, 404);
+  return c.json(updated);
+});
+
+app.delete("/api/tour-waitlist/:id", async (c) => {
+  await db(c.env).delete(tourWaitlist).where(eq(tourWaitlist.id, Number(c.req.param("id"))));
+  return c.body(null, 204);
+});
+
 app.delete("/api/tours/:id", async (c) => {
   const id = Number(c.req.param("id"));
+  await db(c.env).delete(tourWaitlist).where(eq(tourWaitlist.tourId, id));
+  await db(c.env).delete(tourStaff).where(eq(tourStaff.tourId, id));
   await db(c.env).delete(tours).where(eq(tours.id, id));
   return c.body(null, 204);
 });
@@ -339,6 +463,21 @@ const roomProblem = async (env: Env, roomId: number, tourId: number, excludeBook
 
 app.post("/api/bookings", async (c) => {
   const body = await c.req.json();
+  const [existing] = await db(c.env)
+    .select()
+    .from(bookings)
+    .where(and(eq(bookings.customerId, body.customerId), eq(bookings.tourId, body.tourId)));
+  if (existing) {
+    return c.json(
+      {
+        error:
+          existing.status === "cancelled"
+            ? "This customer cancelled on this tour. Reactivate their booking instead."
+            : "This customer is already on this tour",
+      },
+      400,
+    );
+  }
   if (body.roomId != null) {
     const problem = await roomProblem(c.env, body.roomId, body.tourId);
     if (problem) return c.json({ error: problem }, 400);
@@ -362,6 +501,10 @@ app.put("/api/bookings/:id", async (c) => {
     const problem = await roomProblem(c.env, body.roomId, booking.tourId, id);
     if (problem) return c.json({ error: problem }, 400);
   }
+  if (body.invoiceId !== undefined && body.invoiceId !== booking.invoiceId) {
+    // Leaving or switching invoices invalidates any custom payment split that named this booking.
+    await db(c.env).delete(paymentAllocations).where(eq(paymentAllocations.bookingId, id));
+  }
   const [updated] = await db(c.env)
     .update(bookings)
     .set({ roomId: body.roomId, invoiceId: body.invoiceId, updatedAt: new Date().toISOString() })
@@ -370,8 +513,75 @@ app.put("/api/bookings/:id", async (c) => {
   return c.json(updated);
 });
 
+// Cancel one passenger. They leave their room (their old room is remembered so Reactivate can
+// return them) and stop counting toward seats; their invoice link and details are kept.
+// Calling it again on a cancelled booking just updates the date and note.
+app.post("/api/bookings/:id/cancel", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json().catch(() => ({}));
+  const [booking] = await db(c.env).select().from(bookings).where(eq(bookings.id, id));
+  if (!booking) return c.json({ error: "Not found" }, 404);
+  const date = body.date || new Date().toISOString().slice(0, 10);
+  const note = body.note !== undefined ? String(body.note).trim() || null : undefined;
+
+  if (booking.status === "cancelled") {
+    await db(c.env)
+      .update(bookings)
+      .set({ cancelledDate: date, cancelNote: note, updatedAt: new Date().toISOString() })
+      .where(eq(bookings.id, id));
+    return c.json({ ok: true });
+  }
+
+  const [room] = booking.roomId != null ? await db(c.env).select().from(rooms).where(eq(rooms.id, booking.roomId)) : [];
+  await db(c.env)
+    .update(bookings)
+    .set({
+      status: "cancelled",
+      cancelledDate: date,
+      cancelNote: note ?? null,
+      cancelledRoomId: booking.roomId,
+      cancelledRoomType: room?.roomType ?? null,
+      roomId: null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(bookings.id, id));
+  return c.json({ ok: true });
+});
+
+// Put a cancelled passenger back. They return to their old room if it still exists and has space
+// (or to the room given in the body); otherwise they come back unassigned.
+app.post("/api/bookings/:id/reactivate", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json().catch(() => ({}));
+  const [booking] = await db(c.env).select().from(bookings).where(eq(bookings.id, id));
+  if (!booking) return c.json({ error: "Not found" }, 404);
+
+  const wanted: number | null = body.roomId !== undefined ? body.roomId : booking.cancelledRoomId;
+  let roomId: number | null = null;
+  if (wanted != null) {
+    const problem = await roomProblem(c.env, wanted, booking.tourId, id);
+    if (problem && body.roomId !== undefined) return c.json({ error: problem }, 400);
+    if (!problem) roomId = wanted;
+  }
+
+  await db(c.env)
+    .update(bookings)
+    .set({
+      status: "active",
+      roomId,
+      cancelledDate: null,
+      cancelNote: null,
+      cancelledRoomId: null,
+      cancelledRoomType: null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(bookings.id, id));
+  return c.json({ ok: true, roomId });
+});
+
 app.delete("/api/bookings/:id", async (c) => {
   const id = Number(c.req.param("id"));
+  await db(c.env).delete(paymentAllocations).where(eq(paymentAllocations.bookingId, id));
   await db(c.env).delete(bookings).where(eq(bookings.id, id));
   return c.body(null, 204);
 });
@@ -385,6 +595,7 @@ const invoiceBookingRows = (env: Env) =>
     .select({
       invoiceId: bookings.invoiceId,
       bookingId: bookings.id,
+      status: bookings.status,
       customerId: customers.id,
       firstName: customers.firstName,
       lastName: customers.lastName,
@@ -418,6 +629,7 @@ const computeInvoiceSummaries = async (env: Env) => {
     const first = rows[0];
     const bookingsOut = rows.map((b) => ({
       bookingId: b.bookingId,
+      status: b.status,
       customerId: b.customerId,
       firstName: b.firstName,
       lastName: b.lastName,
@@ -439,6 +651,47 @@ const computeInvoiceSummaries = async (env: Env) => {
       balance: totalCharged - totalPaid,
     };
   });
+};
+
+// Per-booking share of its invoice. A payment with explicit allocations goes to the bookings it
+// names; otherwise it's split evenly across the invoice's bookings. Extra line items are split
+// evenly too, so the passengers' balances add up to the invoice balance.
+const computePassengerShares = async (env: Env) => {
+  const [bookingRows, roomRows, paymentRows, allocRows, itemRows] = await Promise.all([
+    invoiceBookingRows(env),
+    db(env).select().from(rooms),
+    db(env).select().from(payments),
+    db(env).select().from(paymentAllocations),
+    db(env).select().from(invoiceItems),
+  ]);
+  const roomTypeById = new Map(roomRows.map((r) => [r.id, r.roomType]));
+  const byInvoice = new Map<number, typeof bookingRows>();
+  for (const b of bookingRows) {
+    if (b.invoiceId == null) continue;
+    byInvoice.set(b.invoiceId, [...(byInvoice.get(b.invoiceId) ?? []), b]);
+  }
+
+  const shares = new Map<number, { charged: number; paid: number; balance: number }>();
+  for (const [invoiceId, rows] of byInvoice) {
+    const n = rows.length;
+    const itemsShare = itemRows.filter((it) => it.invoiceId === invoiceId).reduce((s, it) => s + it.amount, 0) / n;
+    const invoicePayments = paymentRows.filter((p) => p.invoiceId === invoiceId);
+    for (const b of rows) {
+      const cost = bookingCost(b, b.roomId != null ? (roomTypeById.get(b.roomId) ?? null) : null) ?? 0;
+      let paid = 0;
+      for (const p of invoicePayments) {
+        const explicit = allocRows.filter(
+          (a) => a.paymentId === p.id && rows.some((r) => r.bookingId === a.bookingId),
+        );
+        paid += explicit.length
+          ? explicit.filter((a) => a.bookingId === b.bookingId).reduce((s, a) => s + a.amount, 0)
+          : p.amount / n;
+      }
+      const charged = cost + itemsShare;
+      shares.set(b.bookingId, { charged, paid, balance: charged - paid });
+    }
+  }
+  return shares;
 };
 
 // Full customer record for the invoice's "To:" contact block.
@@ -505,6 +758,10 @@ app.get("/api/invoices/:id", async (c) => {
   const totalCharged =
     bookingsOut.reduce((sum, b) => sum + (b.cost ?? 0), 0) + items.reduce((sum, it) => sum + it.amount, 0);
   const totalPaid = invoicePayments.reduce((sum, p) => sum + p.amount, 0);
+  const paymentIds = invoicePayments.map((p) => p.id);
+  const invoiceAllocations = (await db(c.env).select().from(paymentAllocations)).filter((a) =>
+    paymentIds.includes(a.paymentId),
+  );
 
   return c.json({
     ...inv,
@@ -519,7 +776,12 @@ app.get("/api/invoices/:id", async (c) => {
     primaryContact: contact,
     bookings: bookingsOut,
     lineItems: items,
-    payments: invoicePayments,
+    payments: invoicePayments.map((p) => ({
+      ...p,
+      allocations: invoiceAllocations
+        .filter((a) => a.paymentId === p.id)
+        .map((a) => ({ bookingId: a.bookingId, amount: a.amount })),
+    })),
     totalCharged,
     totalPaid,
     balance: totalCharged - totalPaid,
@@ -691,6 +953,15 @@ app.post("/api/payments", async (c) => {
 app.put("/api/payments/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
+  const [existing] = await db(c.env).select().from(payments).where(eq(payments.id, id));
+  // A custom split no longer makes sense once the amount or invoice changes; fall back to even.
+  if (
+    existing &&
+    ((body.amount != null && Number(body.amount) !== existing.amount) ||
+      (body.invoiceId !== undefined && body.invoiceId !== existing.invoiceId))
+  ) {
+    await db(c.env).delete(paymentAllocations).where(eq(paymentAllocations.paymentId, id));
+  }
   const [updated] = await db(c.env)
     .update(payments)
     .set({
@@ -709,8 +980,43 @@ app.put("/api/payments/:id", async (c) => {
   return c.json(updated);
 });
 
+// Replace how one customer payment is split across the passengers on its invoice.
+// An empty list clears the custom split (back to an even split).
+app.put("/api/payments/:id/allocations", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  const [payment] = await db(c.env).select().from(payments).where(eq(payments.id, id));
+  if (!payment) return c.json({ error: "Not found" }, 404);
+  const incoming: { bookingId: number; amount: number }[] = (body.allocations ?? []).map(
+    (a: { bookingId: number; amount: number }) => ({ bookingId: Number(a.bookingId), amount: Number(a.amount) }),
+  );
+
+  if (incoming.length > 0) {
+    if (payment.invoiceId == null) return c.json({ error: "Payment isn't linked to an invoice" }, 400);
+    const invoiceBookings = (await db(c.env).select().from(bookings).where(eq(bookings.invoiceId, payment.invoiceId))).map(
+      (b) => b.id,
+    );
+    if (incoming.some((a) => !invoiceBookings.includes(a.bookingId) || Number.isNaN(a.amount))) {
+      return c.json({ error: "Split must only include passengers on this invoice" }, 400);
+    }
+    const sum = incoming.reduce((s, a) => s + a.amount, 0);
+    if (Math.abs(sum - payment.amount) > 0.005) {
+      return c.json({ error: `Split totals ${sum.toFixed(2)} but the payment is ${payment.amount.toFixed(2)}` }, 400);
+    }
+  }
+
+  await db(c.env).delete(paymentAllocations).where(eq(paymentAllocations.paymentId, id));
+  if (incoming.length > 0) {
+    await db(c.env)
+      .insert(paymentAllocations)
+      .values(incoming.map((a) => ({ paymentId: id, bookingId: a.bookingId, amount: a.amount })));
+  }
+  return c.json({ ok: true });
+});
+
 app.delete("/api/payments/:id", async (c) => {
   const id = Number(c.req.param("id"));
+  await db(c.env).delete(paymentAllocations).where(eq(paymentAllocations.paymentId, id));
   await db(c.env).delete(payments).where(eq(payments.id, id));
   return c.body(null, 204);
 });

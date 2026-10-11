@@ -47,9 +47,21 @@ const cell: React.CSSProperties = { padding: "6px 10px", borderBottom: "1px soli
 const th: React.CSSProperties = { ...cell, background: "#2B4C7E", color: "#fff", textAlign: "left", fontWeight: 700 };
 const tdRight: React.CSSProperties = { ...cell, textAlign: "right" };
 
-export default function InvoiceReceipt() {
+// Shown as its own page (/invoices/:id), or inside a slide-over panel on the tour page, where the
+// parent passes the invoice and is told when something changed so it can refresh.
+export default function InvoiceReceipt({
+  invoiceId: invoiceIdProp,
+  embedded = false,
+  onChanged,
+  onDeleted,
+}: {
+  invoiceId?: number;
+  embedded?: boolean;
+  onChanged?: () => void;
+  onDeleted?: () => void;
+} = {}) {
   const { id } = useParams();
-  const invoiceId = Number(id);
+  const invoiceId = invoiceIdProp ?? Number(id);
   const navigate = useNavigate();
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null);
   const [allCustomers, setAllCustomers] = useState<Customer[]>([]);
@@ -67,6 +79,8 @@ export default function InvoiceReceipt() {
   const [showAddPayment, setShowAddPayment] = useState(false);
   const [editingPayment, setEditingPayment] = useState<PaymentEntry | null>(null);
   const [paymentForm, setPaymentForm] = useState(emptyPaymentForm());
+  const [customSplit, setCustomSplit] = useState(false);
+  const [splitDraft, setSplitDraft] = useState<Record<number, string>>({});
 
   const [addingItem, setAddingItem] = useState(false);
   const [itemDesc, setItemDesc] = useState("");
@@ -94,6 +108,7 @@ export default function InvoiceReceipt() {
       setError(e instanceof Error ? e.message.replace(/^\d+ [^:]*: /, "").replace(/^\{"error":"(.*)"\}$/, "$1") : String(e));
     }
     load();
+    onChanged?.();
   };
 
   const saveNumber = async () => {
@@ -134,9 +149,21 @@ export default function InvoiceReceipt() {
 
   const removePassenger = (bookingId: number) => act(() => api.bookings.setInvoice(bookingId, null));
 
+  // Even split of an amount across the invoice's passengers, to the cent (last one takes the remainder).
+  const evenSplit = (amount: number) => {
+    const n = invoice.bookings.length;
+    const each = Math.floor((amount / n) * 100) / 100;
+    return invoice.bookings.map((b, i) => ({
+      bookingId: b.bookingId,
+      amount: i === n - 1 ? Math.round((amount - each * (n - 1)) * 100) / 100 : each,
+    }));
+  };
+
   const openAddPayment = () => {
     setEditingPayment(null);
     setPaymentForm(emptyPaymentForm());
+    setCustomSplit(false);
+    setSplitDraft({});
     setShowAddPayment(true);
   };
   const openEditPayment = (p: PaymentEntry) => {
@@ -148,7 +175,18 @@ export default function InvoiceReceipt() {
       receivedDate: p.receivedDate ?? "",
       bankedDate: p.bankedDate ?? "",
     });
+    const saved = p.allocations ?? [];
+    setCustomSplit(saved.length > 0);
+    setSplitDraft(Object.fromEntries(saved.map((a) => [a.bookingId, String(a.amount)])));
     setShowAddPayment(true);
+  };
+  const toggleCustomSplit = (on: boolean) => {
+    setCustomSplit(on);
+    if (on) {
+      const amount = Number(paymentForm.amount);
+      const seed = Number.isNaN(amount) ? [] : evenSplit(amount);
+      setSplitDraft(Object.fromEntries(seed.map((a) => [a.bookingId, String(a.amount)])));
+    }
   };
   const submitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -156,15 +194,34 @@ export default function InvoiceReceipt() {
       setError("Enter a valid amount");
       return;
     }
+    const amount = Number(paymentForm.amount);
+    const allocations = customSplit
+      ? invoice.bookings.map((b) => ({ bookingId: b.bookingId, amount: Number(splitDraft[b.bookingId] || 0) }))
+      : [];
+    if (customSplit) {
+      const sum = allocations.reduce((s, a) => s + a.amount, 0);
+      if (Math.abs(sum - amount) > 0.005) {
+        setError(`Split adds up to ${money(sum)} but the payment is ${money(amount)}`);
+        return;
+      }
+    }
     const data = {
       invoiceId: invoice.id,
-      amount: Number(paymentForm.amount),
+      amount,
       method: paymentForm.method || null,
       description: paymentForm.description || null,
       receivedDate: paymentForm.receivedDate || null,
       bankedDate: paymentForm.bankedDate || null,
     };
-    await act(() => (editingPayment ? api.payments.update(editingPayment.id, data) : api.payments.create(data)));
+    await act(async () => {
+      const saved = editingPayment
+        ? await api.payments.update(editingPayment.id, data)
+        : await api.payments.create(data);
+      // Only touch the split when there is one to set, or one to clear.
+      if (allocations.length > 0 || (editingPayment?.allocations ?? []).length > 0) {
+        await api.payments.setAllocations(saved.id, allocations);
+      }
+    });
     setShowAddPayment(false);
   };
   const removePayment = (p: PaymentEntry) => act(() => api.payments.remove(p.id));
@@ -186,7 +243,8 @@ export default function InvoiceReceipt() {
     setConfirmDelete(false);
     await act(async () => {
       await api.invoices.remove(invoice.id);
-      navigate("/invoices");
+      if (embedded) onDeleted?.();
+      else navigate("/invoices");
     });
   };
 
@@ -459,9 +517,11 @@ export default function InvoiceReceipt() {
 
   return (
     <div>
-      <Link to="/invoices" className="back-link no-print">
-        ← Invoices
-      </Link>
+      {!embedded && (
+        <Link to="/invoices" className="back-link no-print">
+          ← Invoices
+        </Link>
+      )}
 
       <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", gap: 8, margin: "8px 0 16px", position: "relative" }}>
         <button className="btn btn-secondary" onClick={() => setConfirmDelete(true)}>
@@ -506,7 +566,7 @@ export default function InvoiceReceipt() {
       </div>
 
       {error && (
-        <div className="no-print" style={{ background: "#FDECEA", color: "#B42318", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
+        <div className="no-print" style={{ background: "#FCEBE7", color: "#A4361F", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
           {error}
         </div>
       )}
@@ -737,7 +797,7 @@ export default function InvoiceReceipt() {
 
             {invoice.lineItems.map((it) => (
               <tr key={it.id}>
-                <td style={{ ...cell, color: it.amount < 0 ? "#1C1D21" : "#B42318" }} colSpan={4}>
+                <td style={{ ...cell, color: it.amount < 0 ? "#1C1D21" : "#A4361F" }} colSpan={4}>
                   {it.description}
                 </td>
                 <td style={cell}>
@@ -749,7 +809,7 @@ export default function InvoiceReceipt() {
                     remove
                   </button>
                 </td>
-                <td style={{ ...tdRight, color: it.amount < 0 ? "#1C1D21" : "#B42318" }}>{money(it.amount)}</td>
+                <td style={{ ...tdRight, color: it.amount < 0 ? "#1C1D21" : "#A4361F" }}>{money(it.amount)}</td>
               </tr>
             ))}
             <tr className="no-print">
@@ -814,6 +874,9 @@ export default function InvoiceReceipt() {
                         <Link to={`/customers/${b.customerId}`}>
                           {b.firstName} {b.lastName}
                         </Link>
+                        {b.status === "cancelled" && (
+                          <span style={{ color: "#B3261E", fontWeight: 700, fontSize: 12 }}> (cancelled)</span>
+                        )}
                         <span className="no-print">
                           {" "}
                           <button
@@ -977,6 +1040,40 @@ export default function InvoiceReceipt() {
                   />
                 </label>
               </div>
+              {invoice.bookings.length > 1 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Split between passengers</div>
+                  <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, marginBottom: 6 }}>
+                    <input type="checkbox" checked={customSplit} onChange={(e) => toggleCustomSplit(e.target.checked)} />
+                    Custom split (otherwise shared evenly)
+                  </label>
+                  {invoice.bookings.map((b, i) => {
+                    const amount = Number(paymentForm.amount);
+                    const even = Number.isNaN(amount) ? null : evenSplit(amount)[i].amount;
+                    return (
+                      <div
+                        key={b.bookingId}
+                        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 4 }}
+                      >
+                        <span>
+                          {b.firstName} {b.lastName}
+                        </span>
+                        {customSplit ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            style={{ width: 110 }}
+                            value={splitDraft[b.bookingId] ?? ""}
+                            onChange={(e) => setSplitDraft({ ...splitDraft, [b.bookingId]: e.target.value })}
+                          />
+                        ) : (
+                          <span className="muted">{even != null ? money(even) : "—"}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div className="modal-actions">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowAddPayment(false)}>
                   Cancel

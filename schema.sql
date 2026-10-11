@@ -81,7 +81,12 @@ CREATE TABLE IF NOT EXISTS bookings (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   room_id INTEGER REFERENCES rooms(id),
-  invoice_id INTEGER REFERENCES invoices(id)
+  invoice_id INTEGER REFERENCES invoices(id),
+  status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'cancelled' (per passenger)
+  cancelled_date TEXT,
+  cancel_note TEXT,
+  cancelled_room_id INTEGER, -- room they were in, so Reactivate can put them back
+  cancelled_room_type TEXT
 );
 
 -- The bank ledger: every payment received and every transfer out (negative amount).
@@ -98,3 +103,37 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- Optional split of one customer payment across the passengers on its invoice.
+-- A payment with no rows here is treated as an even split across the invoice's bookings.
+CREATE TABLE IF NOT EXISTS payment_allocations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  payment_id INTEGER NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
+  booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  amount REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payment_allocations_payment ON payment_allocations(payment_id);
+
+-- Hostess / driver travelling with a tour. Each one takes their own room, which is added to the
+-- tour's room count; they don't use a passenger seat.
+CREATE TABLE IF NOT EXISTS tour_staff (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tour_id INTEGER NOT NULL REFERENCES tours(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('Hostess','Driver')),
+  name TEXT, -- free text; empty/null shows as TBC
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tour_staff_tour ON tour_staff(tour_id);
+
+-- Waitlist for a tour: customers waiting for seats to open up. Doesn't use seats or rooms.
+CREATE TABLE IF NOT EXISTS tour_waitlist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tour_id INTEGER NOT NULL REFERENCES tours(id) ON DELETE CASCADE,
+  customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  date_added TEXT NOT NULL, -- YYYY-MM-DD
+  pax INTEGER NOT NULL DEFAULT 1,
+  note TEXT, -- single free-text line
+  done INTEGER NOT NULL DEFAULT 0, -- 1 = dealt with (shown struck through)
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tour_waitlist_tour ON tour_waitlist(tour_id);

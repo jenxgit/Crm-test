@@ -124,7 +124,7 @@ export default function CustomersList() {
             placeholder="Search name, email, phone, suburb…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            style={{ width: 280, padding: "7px 10px", border: "1px solid #E1E1DC", borderRadius: 8, font: "inherit", fontSize: 14 }}
+            style={{ width: 300, padding: "10px 14px", borderRadius: 10, font: "inherit", fontSize: 14 }}
           />
           {edit && <span className="muted">Changes save when you leave a cell.</span>}
           <button
@@ -141,7 +141,7 @@ export default function CustomersList() {
       </div>
 
       {error && (
-        <div style={{ background: "#FDECEA", color: "#B42318", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
+        <div style={{ background: "#FCEBE7", color: "#A4361F", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
           {error}
         </div>
       )}
@@ -201,8 +201,16 @@ export default function CustomersList() {
               {filtered.map((c) => (
                 <tr key={c.id} className="clickable" onClick={() => navigate(`/customers/${c.id}`)}>
                   <td>
-                    {c.title ? `${c.title} ` : ""}
-                    {c.firstName} {c.lastName}
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <span className="avatar">
+                        {c.firstName[0]}
+                        {c.lastName[0]}
+                      </span>
+                      <span style={{ fontWeight: 600 }}>
+                        {c.title ? `${c.title} ` : ""}
+                        {c.firstName} {c.lastName}
+                      </span>
+                    </div>
                   </td>
                   <td>{c.phone || "—"}</td>
                   <td>{c.mobile || "—"}</td>
@@ -210,7 +218,7 @@ export default function CustomersList() {
                   <td>{c.suburb || "—"}</td>
                   <td>{c.state || "—"}</td>
                   <td>{c.postcode || "—"}</td>
-                  <td>{c.dietaries || "—"}</td>
+                  <td>{c.dietaries ? <span className="badge badge-amber">{c.dietaries}</span> : "—"}</td>
                 </tr>
               ))}
             </tbody>

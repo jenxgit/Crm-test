@@ -29,11 +29,9 @@ export default function Dashboard() {
   useEffect(() => load(), []);
 
   const stat = (label: string, value: React.ReactNode, sub?: React.ReactNode) => (
-    <div>
-      <div className="label" style={{ fontSize: 12, color: "#8B8D97" }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 24, fontWeight: 700 }}>{value}</div>
+    <div className="kpi">
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value num">{value}</div>
       {sub}
     </div>
   );
@@ -46,7 +44,7 @@ export default function Dashboard() {
           <select
             value={fy ?? data.fy.startYear}
             onChange={(e) => load(Number(e.target.value))}
-            style={{ padding: "6px 10px", fontSize: 14 }}
+            style={{ padding: "8px 14px", fontSize: 14, fontWeight: 600, borderRadius: 10 }}
           >
             {data.availableYears.map((y) => (
               <option key={y.startYear} value={y.startYear}>
@@ -61,18 +59,22 @@ export default function Dashboard() {
         <div className="empty-state">Loading&hellip;</div>
       ) : (
         <>
-          <div className="card" style={{ display: "flex", gap: 40, padding: 20, marginBottom: 16, flexWrap: "wrap" }}>
-            {stat("Tours completed", data.toursCompleted)}
-            {stat("Tours planned", data.toursPlanned)}
-            {stat("Total bookings", data.totalBookings)}
-            {stat("Revenue billed", money(data.revenueBilled), <div className="muted" style={{ fontSize: 11 }}>completed tours</div>)}
-            {stat("Payments received", money(data.paymentsReceived), <div className="muted" style={{ fontSize: 11 }}>cash in this FY</div>)}
+          <div className="kpi-grid">
+            {stat("Revenue billed", money(data.revenueBilled), <div className="kpi-sub">from completed tours</div>)}
+            {stat("Payments received", money(data.paymentsReceived), <div className="kpi-sub">cash in this financial year</div>)}
             {stat(
               "Outstanding balance",
               money(data.outstandingBalance),
               data.overdueBalance > 0 ? (
-                <div style={{ fontSize: 11, color: "#B42318" }}>{money(data.overdueBalance)} overdue (tour departed)</div>
+                <div className="kpi-sub warn">{money(data.overdueBalance)} overdue, tour departed</div>
               ) : undefined,
+            )}
+            {stat(
+              "Total bookings",
+              data.totalBookings,
+              <div className="kpi-sub">
+                {data.toursCompleted} tours completed · {data.toursPlanned} planned
+              </div>,
             )}
           </div>
 
@@ -92,17 +94,32 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.upcomingTours.map((t) => (
-                    <tr key={t.id} className="clickable" onClick={() => navigate(`/tours/${t.id}`)}>
-                      <td>{t.tourCode || "—"}</td>
-                      <td>{t.tourName}</td>
-                      <td>{fmt(t.departureDate)}</td>
-                      <td>
-                        {t.passengerCount} / {t.seats ?? "—"}
-                      </td>
-                      <td style={{ fontWeight: 700 }}>{t.seatsLeft}</td>
-                    </tr>
-                  ))}
+                  {data.upcomingTours.map((t) => {
+                    const pct = t.seats ? Math.min(100, Math.round((t.passengerCount / t.seats) * 100)) : 0;
+                    const nearlyFull = t.seatsLeft != null && t.seatsLeft <= 2;
+                    return (
+                      <tr key={t.id} className="clickable" onClick={() => navigate(`/tours/${t.id}`)}>
+                        <td className="num">{t.tourCode || "—"}</td>
+                        <td style={{ fontWeight: 600 }}>{t.tourName}</td>
+                        <td>{fmt(t.departureDate)}</td>
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 160 }}>
+                            <div className={"meter" + (nearlyFull ? " full" : "")} style={{ flex: 1 }}>
+                              <span style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className="num" style={{ fontSize: 13 }}>
+                              {t.passengerCount} / {t.seats ?? "—"}
+                            </span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className={"badge" + (nearlyFull ? " badge-warn" : "")} style={{ fontWeight: 700 }}>
+                            {t.seatsLeft}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}
