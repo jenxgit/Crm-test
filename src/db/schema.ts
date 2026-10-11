@@ -104,6 +104,7 @@ export const bookings = sqliteTable("bookings", {
   cancelNote: text("cancel_note"),
   cancelledRoomId: integer("cancelled_room_id"), // the room they were in, so Reactivate can return them
   cancelledRoomType: text("cancelled_room_type"),
+  groupId: integer("group_id"), // the group hold they belong to (tourGroups), if any
   createdAt: text("created_at").default(sql`(datetime('now'))`),
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
 });
@@ -152,6 +153,19 @@ export const tourWaitlist = sqliteTable("tour_waitlist", {
   pax: integer("pax").notNull().default(1),
   note: text("note"),
   done: integer("done", { mode: "boolean" }).notNull().default(false), // dealt with: shown struck through
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+});
+
+// A group leader's hold: seats and rooms set aside until the names come in. Passengers assigned
+// to the group fill it automatically, so what is still held is derived, not stored.
+export const tourGroups = sqliteTable("tour_groups", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tourId: integer("tour_id").notNull(),
+  name: text("name").notNull(),
+  seats: integer("seats").notNull().default(0),
+  rooms: integer("rooms").notNull().default(0),
+  contactId: integer("contact_id"), // customer to deal with for this group
+  note: text("note"),
   createdAt: text("created_at").default(sql`(datetime('now'))`),
 });
 

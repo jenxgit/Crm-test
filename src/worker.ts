@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { and, eq, sql, getTableColumns, inArray, isNotNull } from "drizzle-orm";
 import { requireAccess, type AccessEnv } from "./access";
 import { dumpDatabase, runScheduledBackup, type BackupEnv } from "./backup";
-import { customers, tours, tasks, bookings, rooms, ROOM_TYPES, invoices, payments, invoiceItems, paymentAllocations, tourStaff, STAFF_ROLES, tourWaitlist } from "./db/schema";
+import { customers, tours, tasks, bookings, rooms, ROOM_TYPES, invoices, payments, invoiceItems, paymentAllocations, tourStaff, STAFF_ROLES, tourWaitlist, tourGroups } from "./db/schema";
 
 export interface Env extends AccessEnv, BackupEnv {
   DB: D1Database;
@@ -47,9 +47,16 @@ const tourWithCounts = (env: Env) =>
   db(env)
     .select({
       ...getTableColumns(tours),
-      passengerCount: sql<number>`(SELECT COUNT(*) FROM bookings WHERE bookings.tour_id = tours.id AND bookings.status = 'active')`,
-      // Passenger rooms plus one room for each hostess/driver.
-      roomCount: sql<number>`(SELECT COUNT(*) FROM rooms WHERE rooms.tour_id = tours.id) + (SELECT COUNT(*) FROM tour_staff WHERE tour_staff.tour_id = tours.id)`,
+      // Seats taken: named active passengers, plus whatever each group hold has not yet filled.
+      passengerCount: sql<number>`(SELECT COUNT(*) FROM bookings WHERE bookings.tour_id = tours.id AND bookings.status = 'active')
+        + COALESCE((SELECT SUM(MAX(0, g.seats - (SELECT COUNT(*) FROM bookings b WHERE b.group_id = g.id AND b.status = 'active')))
+                    FROM tour_groups g WHERE g.tour_id = tours.id), 0)`,
+      // Passenger rooms, one room per hostess/driver, plus each group's held rooms not yet in use.
+      roomCount: sql<number>`(SELECT COUNT(*) FROM rooms WHERE rooms.tour_id = tours.id)
+        + (SELECT COUNT(*) FROM tour_staff WHERE tour_staff.tour_id = tours.id)
+        + COALESCE((SELECT SUM(MAX(0, g.rooms - (SELECT COUNT(DISTINCT b.room_id) FROM bookings b
+                                                  WHERE b.group_id = g.id AND b.status = 'active' AND b.room_id IS NOT NULL)))
+                    FROM tour_groups g WHERE g.tour_id = tours.id), 0)`,
     })
     .from(tours);
 
@@ -135,6 +142,7 @@ app.put("/api/customers/:id", async (c) => {
 
 app.delete("/api/customers/:id", async (c) => {
   const id = Number(c.req.param("id"));
+  await db(c.env).update(tourGroups).set({ contactId: null }).where(eq(tourGroups.contactId, id));
   await db(c.env).delete(tourWaitlist).where(eq(tourWaitlist.customerId, id));
   await db(c.env).delete(customers).where(eq(customers.id, id));
   return c.body(null, 204);
@@ -159,6 +167,7 @@ app.get("/api/tours/:id", async (c) => {
       invoiceId: bookings.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
       status: bookings.status,
+      groupId: bookings.groupId,
       cancelledDate: bookings.cancelledDate,
       cancelNote: bookings.cancelNote,
       cancelledRoomId: bookings.cancelledRoomId,
@@ -213,6 +222,34 @@ app.get("/api/tours/:id", async (c) => {
 
   const staff = await db(c.env).select().from(tourStaff).where(eq(tourStaff.tourId, id)).orderBy(tourStaff.id);
 
+  // Group holds, with how much of each is already filled by named passengers.
+  const groupRows = await db(c.env)
+    .select({
+      id: tourGroups.id,
+      tourId: tourGroups.tourId,
+      name: tourGroups.name,
+      seats: tourGroups.seats,
+      rooms: tourGroups.rooms,
+      note: tourGroups.note,
+      contactId: tourGroups.contactId,
+      contactFirstName: customers.firstName,
+      contactLastName: customers.lastName,
+      contactPhone: customers.phone,
+      contactMobile: customers.mobile,
+    })
+    .from(tourGroups)
+    .leftJoin(customers, eq(tourGroups.contactId, customers.id))
+    .where(eq(tourGroups.tourId, id))
+    .orderBy(tourGroups.id);
+  const groups = groupRows.map((g) => {
+    const members = passengers.filter((p) => p.groupId === g.id);
+    return {
+      ...g,
+      named: members.length,
+      roomsUsed: new Set(members.map((p) => p.roomId).filter((r) => r != null)).size,
+    };
+  });
+
   const waitlist = await db(c.env)
     .select({
       id: tourWaitlist.id,
@@ -232,7 +269,7 @@ app.get("/api/tours/:id", async (c) => {
     .where(eq(tourWaitlist.tourId, id))
     .orderBy(tourWaitlist.dateAdded, tourWaitlist.id);
 
-  return c.json({ ...withAvailability(tour), rooms: roomsWithPassengers, unassigned, passengers, staff, waitlist, cancellations });
+  return c.json({ ...withAvailability(tour), rooms: roomsWithPassengers, unassigned, passengers, staff, waitlist, cancellations, groups });
 });
 
 app.post("/api/tours", async (c) => {
@@ -317,6 +354,55 @@ app.delete("/api/tour-staff/:id", async (c) => {
   return c.body(null, 204);
 });
 
+// Group holds: a leader holds some seats and rooms until the names come in.
+const cleanCount = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
+
+app.post("/api/tour-groups", async (c) => {
+  const body = await c.req.json();
+  const name = String(body.name ?? "").trim();
+  if (!body.tourId || !name) return c.json({ error: "Tour and group name are required" }, 400);
+  const [created] = await db(c.env)
+    .insert(tourGroups)
+    .values({
+      tourId: Number(body.tourId),
+      name,
+      seats: cleanCount(body.seats),
+      rooms: cleanCount(body.rooms),
+      contactId: body.contactId != null ? Number(body.contactId) : null,
+      note: String(body.note ?? "").trim() || null,
+    })
+    .returning();
+  return c.json(created, 201);
+});
+
+app.put("/api/tour-groups/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  if (body.name !== undefined && !String(body.name).trim()) return c.json({ error: "Group name can't be empty" }, 400);
+  const [updated] = await db(c.env)
+    .update(tourGroups)
+    .set({
+      name: body.name !== undefined ? String(body.name).trim() : undefined,
+      seats: body.seats !== undefined ? cleanCount(body.seats) : undefined,
+      rooms: body.rooms !== undefined ? cleanCount(body.rooms) : undefined,
+      // null clears the contact; leaving it out leaves it alone
+      contactId: body.contactId === undefined ? undefined : body.contactId === null ? null : Number(body.contactId),
+      note: body.note !== undefined ? String(body.note).trim() || null : undefined,
+    })
+    .where(eq(tourGroups.id, id))
+    .returning();
+  if (!updated) return c.json({ error: "Not found" }, 404);
+  return c.json(updated);
+});
+
+// Removing a group frees its hold; its passengers stay booked, just no longer grouped.
+app.delete("/api/tour-groups/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  await db(c.env).update(bookings).set({ groupId: null }).where(eq(bookings.groupId, id));
+  await db(c.env).delete(tourGroups).where(eq(tourGroups.id, id));
+  return c.body(null, 204);
+});
+
 // Waitlist entries: who is waiting for a seat, how many, and when they asked.
 const cleanPax = (v: unknown) => Math.max(1, Math.floor(Number(v) || 1));
 
@@ -360,6 +446,7 @@ app.delete("/api/tour-waitlist/:id", async (c) => {
 
 app.delete("/api/tours/:id", async (c) => {
   const id = Number(c.req.param("id"));
+  await db(c.env).delete(tourGroups).where(eq(tourGroups.tourId, id));
   await db(c.env).delete(tourWaitlist).where(eq(tourWaitlist.tourId, id));
   await db(c.env).delete(tourStaff).where(eq(tourStaff.tourId, id));
   await db(c.env).delete(tours).where(eq(tours.id, id));
@@ -461,6 +548,20 @@ const roomProblem = async (env: Env, roomId: number, tourId: number, excludeBook
   return null;
 };
 
+// A passenger added or moved into a room whose occupants all belong to one group joins that group.
+const inheritGroup = async (env: Env, bookingId: number, roomId: number | null) => {
+  if (roomId == null) return;
+  const [self] = await db(env).select().from(bookings).where(eq(bookings.id, bookingId));
+  if (!self || self.groupId != null) return;
+  const others = (await db(env).select().from(bookings).where(eq(bookings.roomId, roomId))).filter(
+    (b) => b.id !== bookingId && b.status === "active",
+  );
+  const groupIds = new Set(others.map((b) => b.groupId));
+  if (others.length > 0 && groupIds.size === 1 && !groupIds.has(null)) {
+    await db(env).update(bookings).set({ groupId: [...groupIds][0] }).where(eq(bookings.id, bookingId));
+  }
+};
+
 app.post("/api/bookings", async (c) => {
   const body = await c.req.json();
   const [existing] = await db(c.env)
@@ -484,8 +585,14 @@ app.post("/api/bookings", async (c) => {
   }
   const [created] = await db(c.env)
     .insert(bookings)
-    .values({ customerId: body.customerId, tourId: body.tourId, roomId: body.roomId ?? null })
+    .values({
+      customerId: body.customerId,
+      tourId: body.tourId,
+      roomId: body.roomId ?? null,
+      groupId: body.groupId ?? null,
+    })
     .returning();
+  await inheritGroup(c.env, created.id, created.roomId);
   return c.json(created, 201);
 });
 
@@ -501,15 +608,25 @@ app.put("/api/bookings/:id", async (c) => {
     const problem = await roomProblem(c.env, body.roomId, booking.tourId, id);
     if (problem) return c.json({ error: problem }, 400);
   }
+  if (body.groupId != null) {
+    const [g] = await db(c.env).select().from(tourGroups).where(eq(tourGroups.id, body.groupId));
+    if (!g || g.tourId !== booking.tourId) return c.json({ error: "Group not found on this tour" }, 400);
+  }
   if (body.invoiceId !== undefined && body.invoiceId !== booking.invoiceId) {
     // Leaving or switching invoices invalidates any custom payment split that named this booking.
     await db(c.env).delete(paymentAllocations).where(eq(paymentAllocations.bookingId, id));
   }
   const [updated] = await db(c.env)
     .update(bookings)
-    .set({ roomId: body.roomId, invoiceId: body.invoiceId, updatedAt: new Date().toISOString() })
+    .set({
+      roomId: body.roomId,
+      invoiceId: body.invoiceId,
+      groupId: body.groupId,
+      updatedAt: new Date().toISOString(),
+    })
     .where(eq(bookings.id, id))
     .returning();
+  if (body.roomId != null) await inheritGroup(c.env, id, body.roomId);
   return c.json(updated);
 });
 

@@ -14,6 +14,7 @@ import {
   Cancellation,
   StaffRole,
   STAFF_ROLES,
+  TourGroup,
   TourDetail as TourDetailType,
   TourStaff,
   WaitlistEntry,
@@ -22,7 +23,8 @@ import { localDate } from "../lib/dates";
 import InvoiceDrawer from "../components/InvoiceDrawer";
 
 const dash = (v: string | null) => v || "—";
-const money = (v: number | null) => (v != null ? `$${v.toLocaleString()}` : "—");
+// Negative amounts (overpaid) read "-$1,295", not "$-1,295".
+const money = (v: number | null) => (v != null ? `${v < 0 ? "-" : ""}$${Math.abs(v).toLocaleString()}` : "—");
 
 const formatDob = (d: string | null) => {
   if (!d) return "—";
@@ -92,6 +94,320 @@ function FloatingHScroll({ children }: { children: React.ReactNode }) {
         }}
       >
         <div style={{ width: contentWidth, height: 1 }} />
+      </div>
+    </div>
+  );
+}
+
+// Group holds: a leader holds seats and rooms until the names come in. Passengers assigned to
+// the group (Actions > Assign to group) fill it automatically, so what is left is calculated.
+// Laid out as compact stacked rows so it fits in a third of the page width.
+function GroupsSection({
+  groups,
+  customers,
+  onAdd,
+  onUpdate,
+  onRemove,
+  onError,
+}: {
+  groups: TourGroup[];
+  customers: Customer[];
+  onAdd: (data: {
+    name: string;
+    seats: number;
+    rooms: number;
+    note: string;
+    contactId: number | null;
+    newContact: { firstName: string; lastName: string; mobile: string } | null;
+  }) => void;
+  onUpdate: (id: number, data: { name?: string; seats?: number; rooms?: number; note?: string; contactId?: number | null }) => void;
+  onRemove: (g: TourGroup) => void;
+  onError: (message: string) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [seats, setSeats] = useState("");
+  const [rooms, setRooms] = useState("");
+  const [note, setNote] = useState("");
+  const [pick, setPick] = useState("");
+  const [isNew, setIsNew] = useState(false);
+  const [nFirst, setNFirst] = useState("");
+  const [nLast, setNLast] = useState("");
+  const [nMobile, setNMobile] = useState("");
+  // Which existing group is having its contact changed right now, and what has been typed.
+  const [changing, setChanging] = useState<number | null>(null);
+  const [changePick, setChangePick] = useState("");
+
+  const label = (c: { lastName: string; firstName: string }) => `${c.lastName}, ${c.firstName}`;
+  const options = [...customers].sort(
+    (a, b) => a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName),
+  );
+  const find = (text: string) => options.find((c) => label(c) === text);
+
+  const reset = () => {
+    setAdding(false);
+    setName("");
+    setSeats("");
+    setRooms("");
+    setNote("");
+    setPick("");
+    setIsNew(false);
+    setNFirst("");
+    setNLast("");
+    setNMobile("");
+  };
+  const submit = () => {
+    if (!name.trim()) {
+      onError("Enter a group name");
+      return;
+    }
+    let contactId: number | null = null;
+    let newContact: { firstName: string; lastName: string; mobile: string } | null = null;
+    if (isNew) {
+      if (nFirst.trim() || nLast.trim()) {
+        if (!nFirst.trim() || !nLast.trim()) {
+          onError("Enter the new contact's first and last name");
+          return;
+        }
+        newContact = { firstName: nFirst.trim(), lastName: nLast.trim(), mobile: nMobile.trim() };
+      }
+    } else if (pick.trim()) {
+      const match = find(pick);
+      if (!match) {
+        onError("Pick a contact from the list");
+        return;
+      }
+      contactId = match.id;
+    }
+    onAdd({
+      name: name.trim(),
+      seats: Math.max(0, Number(seats) || 0),
+      rooms: Math.max(0, Number(rooms) || 0),
+      note,
+      contactId,
+      newContact,
+    });
+    reset();
+  };
+  const saveContact = (groupId: number) => {
+    const match = find(changePick);
+    if (!match) {
+      onError("Pick a contact from the list");
+      return;
+    }
+    onUpdate(groupId, { contactId: match.id });
+    setChanging(null);
+    setChangePick("");
+  };
+
+  const small: React.CSSProperties = { padding: "1px 8px", fontSize: 12 };
+  const field: React.CSSProperties = { fontSize: 13, minWidth: 0, boxSizing: "border-box" };
+  const num: React.CSSProperties = { ...field, width: 54 };
+  const line: React.CSSProperties = { display: "flex", gap: 8, alignItems: "center" };
+  const tag: React.CSSProperties = { fontSize: 12, color: "#8B8D97" };
+  const heldSeats = groups.reduce((sum, g) => sum + Math.max(0, g.seats - g.named), 0);
+  const heldRooms = groups.reduce((sum, g) => sum + Math.max(0, g.rooms - g.roomsUsed), 0);
+
+  return (
+    <div style={{ minWidth: 0 }}>
+      <span className="section-title">Group holds</span>
+      {groups.length > 0 && (
+        <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+          {heldSeats} seats · {heldRooms} rooms still held
+        </span>
+      )}
+      <div className="card" style={{ marginTop: 8, padding: 12 }}>
+        <datalist id="group-contacts">
+          {options.map((c) => (
+            <option key={c.id} value={label(c)} />
+          ))}
+        </datalist>
+        {groups.length === 0 && !adding && (
+          <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
+            No groups holding seats. Add one, then use Actions &gt; Assign to group as the names come in.
+          </div>
+        )}
+
+        {groups.map((g, idx) => {
+          const seatsLeft = g.seats - g.named;
+          const roomsLeft = g.rooms - g.roomsUsed;
+          const phone = g.contactMobile || g.contactPhone;
+          const flag = { borderColor: "#B3261E", color: "#B3261E" };
+          return (
+            <div
+              key={g.id}
+              style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 0", borderTop: idx === 0 ? undefined : rowBorder }}
+            >
+              <div style={line}>
+                <input
+                  key={`${g.id}-${g.name}`}
+                  defaultValue={g.name}
+                  style={{ ...field, flex: 1, fontWeight: 600 }}
+                  onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== g.name && onUpdate(g.id, { name: e.target.value })}
+                  onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                />
+                <label style={{ ...line, gap: 4, ...tag }}>
+                  Seats
+                  <input
+                    type="number"
+                    min={0}
+                    key={`${g.id}-s-${g.seats}`}
+                    defaultValue={g.seats}
+                    style={seatsLeft < 0 ? { ...num, ...flag } : num}
+                    onBlur={(e) => Number(e.target.value) !== g.seats && onUpdate(g.id, { seats: Number(e.target.value) })}
+                  />
+                </label>
+                <label style={{ ...line, gap: 4, ...tag }}>
+                  Rooms
+                  <input
+                    type="number"
+                    min={0}
+                    key={`${g.id}-r-${g.rooms}`}
+                    defaultValue={g.rooms}
+                    style={roomsLeft < 0 ? { ...num, ...flag } : num}
+                    onBlur={(e) => Number(e.target.value) !== g.rooms && onUpdate(g.id, { rooms: Number(e.target.value) })}
+                  />
+                </label>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: "3px 6px", display: "inline-flex" }}
+                  title="Delete this group hold"
+                  aria-label="Delete this group hold"
+                  onClick={() => onRemove(g)}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+
+              <div style={line}>
+                {changing === g.id ? (
+                  <>
+                    <input
+                      list="group-contacts"
+                      autoFocus
+                      placeholder="Surname, first name"
+                      value={changePick}
+                      onChange={(e) => setChangePick(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && saveContact(g.id)}
+                      style={{ ...field, flex: 1 }}
+                    />
+                    <button className="btn btn-primary" style={small} onClick={() => saveContact(g.id)}>
+                      ✓
+                    </button>
+                    <button className="btn btn-secondary" style={small} onClick={() => setChanging(null)}>
+                      ×
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ flex: "0 1 45%", minWidth: 0, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {g.contactId != null ? (
+                        <>
+                          <Link to={`/customers/${g.contactId}`}>
+                            {g.contactFirstName} {g.contactLastName}
+                          </Link>
+                          {phone && <span style={{ ...tag, marginLeft: 6 }}>{phone}</span>}
+                        </>
+                      ) : (
+                        <span style={tag}>No contact</span>
+                      )}
+                    </span>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ ...small, padding: "0 6px", fontSize: 11 }}
+                      onClick={() => {
+                        setChanging(g.id);
+                        setChangePick("");
+                      }}
+                    >
+                      {g.contactId != null ? "change" : "+ contact"}
+                    </button>
+                    <input
+                      key={`${g.id}-n-${g.note ?? ""}`}
+                      defaultValue={g.note ?? ""}
+                      placeholder="Note"
+                      style={{ ...field, flex: 1 }}
+                      onBlur={(e) => e.target.value.trim() !== (g.note ?? "") && onUpdate(g.id, { note: e.target.value })}
+                      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {adding && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              padding: "10px 0 4px",
+              borderTop: groups.length > 0 ? rowBorder : undefined,
+            }}
+          >
+            <div style={line}>
+              <input
+                autoFocus
+                placeholder="Group name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                style={{ ...field, flex: 1 }}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+              <label style={{ ...line, gap: 4, ...tag }}>
+                Seats
+                <input type="number" min={0} placeholder="0" value={seats} onChange={(e) => setSeats(e.target.value)} style={num} />
+              </label>
+              <label style={{ ...line, gap: 4, ...tag }}>
+                Rooms
+                <input type="number" min={0} placeholder="0" value={rooms} onChange={(e) => setRooms(e.target.value)} style={num} />
+              </label>
+            </div>
+            {isNew ? (
+              <div style={line}>
+                <input placeholder="First name" value={nFirst} onChange={(e) => setNFirst(e.target.value)} style={{ ...field, flex: 1 }} />
+                <input placeholder="Last name" value={nLast} onChange={(e) => setNLast(e.target.value)} style={{ ...field, flex: 1 }} />
+                <input placeholder="Mobile" value={nMobile} onChange={(e) => setNMobile(e.target.value)} style={{ ...field, width: 110 }} />
+              </div>
+            ) : (
+              <input
+                list="group-contacts"
+                placeholder="Contact (surname, first name)"
+                value={pick}
+                onChange={(e) => setPick(e.target.value)}
+                style={field}
+              />
+            )}
+            <div>
+              <button type="button" className="btn btn-secondary" style={{ ...small, padding: "0 8px", fontSize: 11 }} onClick={() => setIsNew(!isNew)}>
+                {isNew ? "← Existing customer" : "+ New customer"}
+              </button>
+            </div>
+            <input
+              placeholder="Note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              style={field}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+            />
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn btn-primary" style={small} onClick={submit}>
+                Add
+              </button>
+              <button className="btn btn-secondary" style={small} onClick={reset}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!adding && (
+          <button className="btn btn-secondary" style={{ ...small, marginTop: groups.length ? 4 : 0 }} onClick={() => setAdding(true)}>
+            + Group hold
+          </button>
+        )}
       </div>
     </div>
   );
@@ -218,7 +534,7 @@ function StaffSection({
   onRemove: (id: number) => void;
 }) {
   return (
-    <div style={{ width: "33%", minWidth: 340 }}>
+    <div style={{ minWidth: 0 }}>
       <span className="section-title">Hostess &amp; driver</span>
       <div className="card" style={{ marginTop: 8, padding: 12 }}>
         {staff.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No hostess or driver allocated.</div>}
@@ -259,8 +575,8 @@ function StaffSection({
   );
 }
 
-// Waitlist: who is waiting for a seat, how many people, and when they asked. Sits beside the
-// hostess & driver box. Contacts come from the customer records.
+// Waitlist: who is waiting for a seat, how many people, and when they asked. Contacts come from
+// the customer records. Laid out as compact stacked rows so it fits in a third of the page width.
 function WaitlistSection({
   entries,
   customers,
@@ -313,15 +629,13 @@ function WaitlistSection({
     setNEmail("");
   };
   const submit = () => {
+    const data = { dateAdded: date || today, pax: Math.max(1, Number(pax) || 1), note };
     if (isNew) {
       if (!nFirst.trim() || !nLast.trim()) {
         onError("Enter the new customer's first and last name");
         return;
       }
-      onAddNew(
-        { firstName: nFirst.trim(), lastName: nLast.trim(), mobile: nMobile.trim(), email: nEmail.trim() },
-        { dateAdded: date || today, pax: Math.max(1, Number(pax) || 1), note },
-      );
+      onAddNew({ firstName: nFirst.trim(), lastName: nLast.trim(), mobile: nMobile.trim(), email: nEmail.trim() }, data);
       reset();
       return;
     }
@@ -330,7 +644,7 @@ function WaitlistSection({
       onError("Pick a customer from the list");
       return;
     }
-    onAdd({ customerId: match.id, dateAdded: date || today, pax: Math.max(1, Number(pax) || 1), note });
+    onAdd({ customerId: match.id, ...data });
     reset();
   };
 
@@ -338,19 +652,20 @@ function WaitlistSection({
   const waitingEntries = entries.filter((e) => !e.done);
   const total = waitingEntries.reduce((sum, e) => sum + e.pax, 0);
   const sorted = [...waitingEntries, ...entries.filter((e) => e.done)];
+
+  const small: React.CSSProperties = { padding: "1px 8px", fontSize: 12 };
   // Inputs inherit the row's strikethrough/colour so a done entry reads as done all the way across.
-  const input: React.CSSProperties = { fontSize: 13, textDecoration: "inherit", color: "inherit" };
-  const th: React.CSSProperties = { ...headCell, padding: "4px 6px" };
-  const td: React.CSSProperties = { padding: "4px 6px", fontSize: 13, verticalAlign: "middle" };
+  const field: React.CSSProperties = { fontSize: 13, minWidth: 0, boxSizing: "border-box", textDecoration: "inherit", color: "inherit" };
+  const line: React.CSSProperties = { display: "flex", gap: 8, alignItems: "center" };
 
   return (
-    <div style={{ flex: 1, minWidth: 420 }}>
+    <div style={{ minWidth: 0 }}>
       <span className="section-title">Waitlist</span>
       <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
         {waitingEntries.length} waiting · {total} pax
         {entries.length > waitingEntries.length && ` · ${entries.length - waitingEntries.length} done`}
       </span>
-      <div className="card" style={{ marginTop: 8, padding: 12, overflowX: "auto" }}>
+      <div className="card" style={{ marginTop: 8, padding: 12 }}>
         <datalist id="waitlist-customers">
           {options.map((c) => (
             <option key={c.id} value={label(c)} />
@@ -359,164 +674,131 @@ function WaitlistSection({
         {entries.length === 0 && !adding && (
           <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Nobody on the waitlist.</div>
         )}
-        {(entries.length > 0 || adding) && (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={th}>Done</th>
-                <th style={th}>Date added</th>
-                <th style={th}>Contact</th>
-                <th style={th}>PAX</th>
-                <th style={{ ...th, width: "100%" }}>Note</th>
-                <th style={th}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((e) => (
-                <tr
-                  key={e.id}
-                  style={{
-                    borderTop: rowBorder,
-                    textDecoration: e.done ? "line-through" : undefined,
-                    color: e.done ? "#B3261E" : undefined,
-                  }}
-                >
-                  <td style={{ ...td, textAlign: "center" }}>
-                    <input
-                      type="checkbox"
-                      title={e.done ? "Mark as waiting again" : "Mark as done"}
-                      checked={e.done}
-                      onChange={(ev) => onUpdate(e.id, { done: ev.target.checked })}
-                    />
-                  </td>
-                  <td style={td}>
-                    <input
-                      type="date"
-                      key={`${e.id}-${e.dateAdded}`}
-                      defaultValue={e.dateAdded}
-                      style={input}
-                      onBlur={(ev) => ev.target.value && ev.target.value !== e.dateAdded && onUpdate(e.id, { dateAdded: ev.target.value })}
-                    />
-                  </td>
-                  <td style={{ ...td, whiteSpace: "nowrap" }}>
-                    <Link to={`/customers/${e.customerId}`} style={e.done ? { color: "inherit" } : undefined}>
-                      {e.firstName} {e.lastName}
-                    </Link>
-                    {(e.mobile || e.phone) && (
-                      <div className="muted" style={{ fontSize: 12 }}>{e.mobile || e.phone}</div>
-                    )}
-                  </td>
-                  <td style={td}>
-                    <input
-                      type="number"
-                      min={1}
-                      key={`${e.id}-${e.pax}`}
-                      defaultValue={e.pax}
-                      style={{ ...input, width: 56 }}
-                      onBlur={(ev) => Number(ev.target.value) !== e.pax && onUpdate(e.id, { pax: Number(ev.target.value) })}
-                    />
-                  </td>
-                  <td style={td}>
-                    <input
-                      key={`${e.id}-${e.note ?? ""}`}
-                      defaultValue={e.note ?? ""}
-                      placeholder="Note"
-                      style={{ ...input, width: "100%", minWidth: 140, boxSizing: "border-box" }}
-                      onBlur={(ev) => ev.target.value.trim() !== (e.note ?? "") && onUpdate(e.id, { note: ev.target.value })}
-                      onKeyDown={(ev) => ev.key === "Enter" && (ev.target as HTMLInputElement).blur()}
-                    />
-                  </td>
-                  <td style={{ ...td, textAlign: "right" }}>
-                    <button className="btn btn-secondary" style={{ padding: "2px 8px", fontSize: 12 }} onClick={() => onRemove(e.id)}>
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {adding && (
-                <tr style={{ borderTop: rowBorder, background: "#FAFAF8" }}>
-                  <td style={td} />
-                  <td style={td}>
-                    <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={input} />
-                  </td>
-                  <td style={td}>
-                    {isNew ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <input
-                          placeholder="First name"
-                          value={nFirst}
-                          onChange={(e) => setNFirst(e.target.value)}
-                          style={{ ...input, width: 220 }}
-                          autoFocus
-                        />
-                        <input
-                          placeholder="Last name"
-                          value={nLast}
-                          onChange={(e) => setNLast(e.target.value)}
-                          style={{ ...input, width: 220 }}
-                        />
-                        <input
-                          placeholder="Mobile (optional)"
-                          value={nMobile}
-                          onChange={(e) => setNMobile(e.target.value)}
-                          style={{ ...input, width: 220 }}
-                        />
-                        <input
-                          type="email"
-                          placeholder="Email (optional)"
-                          value={nEmail}
-                          onChange={(e) => setNEmail(e.target.value)}
-                          style={{ ...input, width: 220 }}
-                        />
-                      </div>
-                    ) : (
-                      <input
-                        list="waitlist-customers"
-                        placeholder="Search customer (surname, first name)"
-                        value={pick}
-                        onChange={(e) => setPick(e.target.value)}
-                        style={{ ...input, width: 220 }}
-                        autoFocus
-                      />
-                    )}
-                    <div>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        style={{ padding: "0 8px", fontSize: 11, marginTop: 4 }}
-                        onClick={() => setIsNew(!isNew)}
-                      >
-                        {isNew ? "← Existing customer" : "+ New customer"}
-                      </button>
-                    </div>
-                  </td>
-                  <td style={td}>
-                    <input type="number" min={1} value={pax} onChange={(e) => setPax(e.target.value)} style={{ ...input, width: 56 }} />
-                  </td>
-                  <td style={td}>
-                    <input
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      placeholder="Note"
-                      style={{ ...input, width: "100%", minWidth: 140, boxSizing: "border-box" }}
-                      onKeyDown={(e) => e.key === "Enter" && submit()}
-                    />
-                  </td>
-                  <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
-                    <button className="btn btn-primary" style={{ padding: "2px 10px", fontSize: 12, marginRight: 6 }} onClick={submit}>
-                      Add
-                    </button>
-                    <button className="btn btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }} onClick={reset}>
-                      Cancel
-                    </button>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+
+        {sorted.map((e, idx) => (
+          <div
+            key={e.id}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              padding: "8px 0",
+              borderTop: idx === 0 ? undefined : rowBorder,
+              textDecoration: e.done ? "line-through" : undefined,
+              color: e.done ? "#B3261E" : undefined,
+            }}
+          >
+            <div style={line}>
+              <input
+                type="checkbox"
+                title={e.done ? "Mark as waiting again" : "Mark as done"}
+                checked={e.done}
+                onChange={(ev) => onUpdate(e.id, { done: ev.target.checked })}
+              />
+              <input
+                type="date"
+                key={`${e.id}-${e.dateAdded}`}
+                defaultValue={e.dateAdded}
+                style={{ ...field, width: 128 }}
+                onBlur={(ev) => ev.target.value && ev.target.value !== e.dateAdded && onUpdate(e.id, { dateAdded: ev.target.value })}
+              />
+              <span style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <Link to={`/customers/${e.customerId}`} style={e.done ? { color: "inherit" } : undefined}>
+                  {e.firstName} {e.lastName}
+                </Link>
+                {(e.mobile || e.phone) && (
+                  <span style={{ fontSize: 12, color: "#8B8D97", marginLeft: 6 }}>{e.mobile || e.phone}</span>
+                )}
+              </span>
+              <label style={{ ...line, gap: 4, fontSize: 12, color: "#8B8D97" }}>
+                Pax
+                <input
+                  type="number"
+                  min={1}
+                  key={`${e.id}-${e.pax}`}
+                  defaultValue={e.pax}
+                  style={{ ...field, width: 50 }}
+                  onBlur={(ev) => Number(ev.target.value) !== e.pax && onUpdate(e.id, { pax: Number(ev.target.value) })}
+                />
+              </label>
+              <button className="btn btn-secondary" style={small} title="Remove from waitlist" onClick={() => onRemove(e.id)}>
+                ×
+              </button>
+            </div>
+            <input
+              key={`${e.id}-${e.note ?? ""}`}
+              defaultValue={e.note ?? ""}
+              placeholder="Note"
+              style={{ ...field, width: "100%" }}
+              onBlur={(ev) => ev.target.value.trim() !== (e.note ?? "") && onUpdate(e.id, { note: ev.target.value })}
+              onKeyDown={(ev) => ev.key === "Enter" && (ev.target as HTMLInputElement).blur()}
+            />
+          </div>
+        ))}
+
+        {adding && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              padding: "10px 0 4px",
+              borderTop: entries.length > 0 ? rowBorder : undefined,
+            }}
+          >
+            <div style={line}>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...field, width: 132 }} />
+              <label style={{ ...line, gap: 4, fontSize: 12, color: "#8B8D97" }}>
+                Pax
+                <input type="number" min={1} value={pax} onChange={(e) => setPax(e.target.value)} style={{ ...field, width: 54 }} />
+              </label>
+            </div>
+            {isNew ? (
+              <>
+                <div style={line}>
+                  <input autoFocus placeholder="First name" value={nFirst} onChange={(e) => setNFirst(e.target.value)} style={{ ...field, flex: 1 }} />
+                  <input placeholder="Last name" value={nLast} onChange={(e) => setNLast(e.target.value)} style={{ ...field, flex: 1 }} />
+                </div>
+                <div style={line}>
+                  <input placeholder="Mobile (optional)" value={nMobile} onChange={(e) => setNMobile(e.target.value)} style={{ ...field, flex: 1 }} />
+                  <input type="email" placeholder="Email (optional)" value={nEmail} onChange={(e) => setNEmail(e.target.value)} style={{ ...field, flex: 1 }} />
+                </div>
+              </>
+            ) : (
+              <input
+                list="waitlist-customers"
+                autoFocus
+                placeholder="Contact (surname, first name)"
+                value={pick}
+                onChange={(e) => setPick(e.target.value)}
+                style={field}
+              />
+            )}
+            <div>
+              <button type="button" className="btn btn-secondary" style={{ ...small, padding: "0 8px", fontSize: 11 }} onClick={() => setIsNew(!isNew)}>
+                {isNew ? "← Existing customer" : "+ New customer"}
+              </button>
+            </div>
+            <input
+              placeholder="Note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              style={field}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+            />
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn btn-primary" style={small} onClick={submit}>
+                Add
+              </button>
+              <button className="btn btn-secondary" style={small} onClick={reset}>
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
+
         {!adding && (
-          <button className="btn btn-secondary" style={{ padding: "2px 10px", fontSize: 12, marginTop: entries.length ? 8 : 0 }} onClick={() => setAdding(true)}>
+          <button className="btn btn-secondary" style={{ ...small, marginTop: entries.length ? 4 : 0 }} onClick={() => setAdding(true)}>
             + Add to waitlist
           </button>
         )}
@@ -687,6 +969,8 @@ function PassengerCells({
   onMove,
   moveTargets,
   canUnassign,
+  groups,
+  onGroup,
   edit,
   onSave,
   invoiceCell,
@@ -701,6 +985,8 @@ function PassengerCells({
   onMove: (roomId: number | null) => void;
   moveTargets: { id: number; label: string }[];
   canUnassign: boolean;
+  groups: { id: number; name: string }[];
+  onGroup: (groupId: number | null) => void;
 }) {
   return (
     <>
@@ -730,6 +1016,8 @@ function PassengerCells({
             const v = e.target.value;
             if (v.startsWith("move:")) onMove(Number(v.slice(5)));
             else if (v === "unassign") onMove(null);
+            else if (v.startsWith("group:")) onGroup(Number(v.slice(6)));
+            else if (v === "ungroup") onGroup(null);
             else if (v === "cancel") onCancel();
             else if (v === "delete") onRemove();
           }}
@@ -746,6 +1034,18 @@ function PassengerCells({
             </optgroup>
           )}
           {canUnassign && <option value="unassign">Unassign from room</option>}
+          {groups.some((g) => g.id !== p.groupId) && (
+            <optgroup label="Assign to group">
+              {groups
+                .filter((g) => g.id !== p.groupId)
+                .map((g) => (
+                  <option key={g.id} value={`group:${g.id}`}>
+                    {g.name}
+                  </option>
+                ))}
+            </optgroup>
+          )}
+          {p.groupId != null && <option value="ungroup">Remove from group</option>}
           <option value="cancel">Cancel booking</option>
           <option value="delete">Delete from tour…</option>
         </select>
@@ -903,6 +1203,41 @@ export default function TourDetail() {
 
   const typeCounts = ROOM_TYPES.map((t) => [t, tour.rooms.filter((r) => r.roomType === t).length] as const);
 
+  // Rooms are listed under the group their passengers belong to; ungrouped rooms come first.
+  // Room numbers stay as they were, so "Room 3" still means the same room.
+  const groupOfRoom = (r: Room) => r.passengers.find((p) => p.groupId != null)?.groupId ?? null;
+  const indexed = tour.rooms.map((room, i) => ({ room, i }));
+  const orderedRooms: { room: Room; i: number; header?: TourGroup }[] = [
+    ...indexed.filter((x) => groupOfRoom(x.room) == null),
+    ...tour.groups.flatMap((g) =>
+      indexed
+        .filter((x) => groupOfRoom(x.room) === g.id)
+        .map((x, k): { room: Room; i: number; header?: TourGroup } => (k === 0 ? { ...x, header: g } : x)),
+    ),
+  ];
+  const groupName = (id: number | null) => tour.groups.find((g) => g.id === id)?.name ?? null;
+
+  // Running totals for the table footer. Main totals cover the people currently travelling.
+  // Cost counts everyone; payments and balance only count passengers who have an invoice.
+  const travelling: { cost: number | null; p: Passenger }[] = [
+    ...tour.rooms.flatMap((r) => r.passengers.map((p) => ({ cost: passengerCost(r.roomType), p }))),
+    ...tour.unassigned.map((p) => ({ cost: passengerCost(null), p })),
+  ];
+  const sum = (xs: (number | null | undefined)[]) => xs.reduce<number>((t, x) => t + (x ?? 0), 0);
+  const totals = {
+    cost: sum(travelling.map((x) => x.cost)),
+    paid: sum(travelling.map((x) => (x.p.invoiceId != null ? x.p.paymentsTotal : null))),
+    balance: sum(travelling.map((x) => (x.p.invoiceId != null ? x.p.balanceDue : null))),
+    notInvoiced: travelling.filter((x) => x.p.invoiceId == null).length,
+  };
+  // Cancelled passengers still sit on their invoices, so their money is shown separately.
+  const cancelledTotals = {
+    count: tour.cancellations.length,
+    cost: sum(tour.cancellations.map((c) => passengerCost(c.cancelledRoomType === "Single" ? "Single" : null))),
+    paid: sum(tour.cancellations.map((c) => (c.invoiceId != null ? c.paymentsTotal : null))),
+    balance: sum(tour.cancellations.map((c) => (c.invoiceId != null ? c.balanceDue : null))),
+  };
+
   // Inline "add passenger" row. Inside a room it sits under the room's rowSpan cells.
   const addRow = (roomId: number | null, key: number | "unassigned", wide: boolean) =>
     adding === key ? (
@@ -1040,7 +1375,7 @@ export default function TourDetail() {
               </tr>
             )}
 
-            {tour.rooms.map((room: Room, i) => {
+            {orderedRooms.flatMap(({ room, i, header }) => {
               const n = room.passengers.length;
               const full = n >= room.capacity;
               const isAdding = adding === room.id;
@@ -1093,6 +1428,8 @@ export default function TourDetail() {
                         cost={passengerCost(room.roomType)}
                         onRemove={() => setDeleteTarget({ bookingId: p.bookingId, name: `${p.firstName} ${p.lastName}` })}
                   onCancel={() => openCancel(p.bookingId, `${p.firstName} ${p.lastName}`)}
+                  groups={tour.groups}
+                  onGroup={(gid) => act(() => api.bookings.setGroup(p.bookingId, gid))}
                         onMove={(roomId) => act(() => api.bookings.setRoom(p.bookingId, roomId))}
                         moveTargets={targetsFor(room.id)}
                         canUnassign
@@ -1132,7 +1469,17 @@ export default function TourDetail() {
                   )}
                 </tr>
               ));
-              return [...trs, ...(isAdding ? [addRow(room.id, room.id, false)] : [])];
+              const headerRow = header ? (
+                <tr key={`group-${header.id}`} style={{ borderTop: roomBorder }}>
+                  <td colSpan={COLS} style={{ ...cell, background: "#E9EEF3", fontWeight: 700 }}>
+                    Group: {header.name}
+                    <span style={{ fontWeight: 400, color: "#5B6B79", marginLeft: 10 }}>
+                      {header.named} of {header.seats} seats named · {header.roomsUsed} of {header.rooms} rooms
+                    </span>
+                  </td>
+                </tr>
+              ) : null;
+              return [...(headerRow ? [headerRow] : []), ...trs, ...(isAdding ? [addRow(room.id, room.id, false)] : [])];
             })}
 
             <tr style={{ borderTop: roomBorder }}>
@@ -1152,12 +1499,16 @@ export default function TourDetail() {
             </tr>
             {tour.unassigned.map((p) => (
               <tr key={p.bookingId} style={{ borderTop: rowBorder }}>
-                <td colSpan={2} />
+                <td colSpan={2} style={{ ...cell, fontSize: 11, color: "#5B6B79" }}>
+                  {groupName(p.groupId) ?? ""}
+                </td>
                 <PassengerCells
                   p={p}
                   cost={passengerCost(null)}
                   onRemove={() => setDeleteTarget({ bookingId: p.bookingId, name: `${p.firstName} ${p.lastName}` })}
                   onCancel={() => openCancel(p.bookingId, `${p.firstName} ${p.lastName}`)}
+                  groups={tour.groups}
+                  onGroup={(gid) => act(() => api.bookings.setGroup(p.bookingId, gid))}
                   onMove={(roomId) => act(() => api.bookings.setRoom(p.bookingId, roomId))}
                   moveTargets={targetsFor()}
                   canUnassign={false}
@@ -1179,15 +1530,63 @@ export default function TourDetail() {
             ))}
             {addRow(null, "unassigned", true)}
           </tbody>
+          <tfoot>
+            <tr style={{ borderTop: roomBorder, background: "#F1F1EC", fontWeight: 700 }}>
+              <td colSpan={14} style={{ ...cell, textAlign: "right" }}>
+                Totals ({travelling.length} {travelling.length === 1 ? "passenger" : "passengers"})
+              </td>
+              <td style={cell}>{money(totals.cost)}</td>
+              <td style={{ ...cell, textAlign: "right" }}>{money(totals.paid)}</td>
+              <td style={{ ...cell, textAlign: "right", color: totals.balance > 0 ? "#B3261E" : undefined }}>
+                {money(totals.balance)}
+              </td>
+              <td colSpan={3} style={{ ...cell, fontWeight: 400, color: "#8B8D97" }}>
+                {totals.notInvoiced > 0 ? `${totals.notInvoiced} not yet invoiced` : ""}
+              </td>
+            </tr>
+            {cancelledTotals.count > 0 && (
+              <tr style={{ borderTop: rowBorder, color: "#8B8D97" }}>
+                <td colSpan={14} style={{ ...cell, textAlign: "right" }}>
+                  Cancelled, still on invoices ({cancelledTotals.count})
+                </td>
+                <td style={cell}>{money(cancelledTotals.cost)}</td>
+                <td style={{ ...cell, textAlign: "right" }}>{money(cancelledTotals.paid)}</td>
+                <td style={{ ...cell, textAlign: "right" }}>{money(cancelledTotals.balance)}</td>
+                <td colSpan={3} style={cell} />
+              </tr>
+            )}
+          </tfoot>
         </table>
       </FloatingHScroll>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start", marginTop: 20 }}>
+      <div className="tour-boxes" style={{ marginTop: 20 }}>
         <StaffSection
           staff={tour.staff}
           onAdd={(role) => act(() => api.staff.create({ tourId, role }))}
           onUpdate={(sid, data) => act(() => api.staff.update(sid, data))}
           onRemove={(sid) => act(() => api.staff.remove(sid))}
+        />
+        <GroupsSection
+          groups={tour.groups}
+          customers={customers}
+          onAdd={({ newContact, ...data }) =>
+            act(async () => {
+              let contactId = data.contactId;
+              if (newContact) {
+                const created = await api.customers.create({
+                  firstName: newContact.firstName,
+                  lastName: newContact.lastName,
+                  mobile: newContact.mobile || null,
+                });
+                contactId = created.id;
+                api.customers.list().then(setCustomers);
+              }
+              await api.groups.create({ tourId, ...data, contactId });
+            })
+          }
+          onUpdate={(gid, data) => act(() => api.groups.update(gid, data))}
+          onRemove={(g) => act(() => api.groups.remove(g.id))}
+          onError={setError}
         />
         <WaitlistSection
           entries={tour.waitlist}

@@ -68,6 +68,7 @@ export type Passenger = {
   roomId: number | null;
   invoiceId: number | null;
   invoiceNumber: string | null;
+  groupId: number | null; // the group hold they belong to, if any
   paymentsTotal: number | null; // this passenger's share of their invoice's payments
   balanceDue: number | null; // this passenger's share of the invoice charges, less their payments
   customerId: number;
@@ -115,6 +116,24 @@ export type WaitlistEntry = {
   done: boolean; // dealt with: kept on the list but shown struck through
 };
 
+// A group leader's hold. named / roomsUsed come from passengers assigned to the group, so the
+// seats and rooms still held are derived: seats - named, rooms - roomsUsed.
+export type TourGroup = {
+  id: number;
+  tourId: number;
+  name: string;
+  seats: number;
+  rooms: number;
+  note: string | null; // single free-text line
+  contactId: number | null; // customer to deal with for this group
+  contactFirstName: string | null;
+  contactLastName: string | null;
+  contactPhone: string | null;
+  contactMobile: string | null;
+  named: number;
+  roomsUsed: number;
+};
+
 export type TourDetail = Tour & {
   rooms: Room[];
   unassigned: Passenger[];
@@ -122,6 +141,7 @@ export type TourDetail = Tour & {
   staff: TourStaff[];
   waitlist: WaitlistEntry[];
   cancellations: Cancellation[];
+  groups: TourGroup[];
 };
 
 export type CustomerDetail = Customer & { bookings: Booking[]; tasks: Task[] };
@@ -261,6 +281,13 @@ export const api = {
       request<Task>(`/api/tasks/${id}`, { method: "PUT", body: JSON.stringify({ task }) }),
     remove: (id: number) => request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
   },
+  groups: {
+    create: (data: { tourId: number; name: string; seats?: number; rooms?: number; note?: string; contactId?: number | null }) =>
+      request<{ id: number }>("/api/tour-groups", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: number, data: { name?: string; seats?: number; rooms?: number; note?: string; contactId?: number | null }) =>
+      request<{ id: number }>(`/api/tour-groups/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    remove: (id: number) => request<void>(`/api/tour-groups/${id}`, { method: "DELETE" }),
+  },
   waitlist: {
     create: (data: { tourId: number; customerId: number; dateAdded?: string; pax?: number; note?: string }) =>
       request<{ id: number }>("/api/tour-waitlist", { method: "POST", body: JSON.stringify(data) }),
@@ -290,6 +317,8 @@ export const api = {
       request<Booking>("/api/bookings", { method: "POST", body: JSON.stringify(data) }),
     setRoom: (id: number, roomId: number | null) =>
       request<Booking>(`/api/bookings/${id}`, { method: "PUT", body: JSON.stringify({ roomId }) }),
+    setGroup: (id: number, groupId: number | null) =>
+      request<Booking>(`/api/bookings/${id}`, { method: "PUT", body: JSON.stringify({ groupId }) }),
     setInvoice: (id: number, invoiceId: number | null) =>
       request<Booking>(`/api/bookings/${id}`, { method: "PUT", body: JSON.stringify({ invoiceId }) }),
     // Cancelling keeps the passenger on the tour record (and invoice); remove deletes the booking.

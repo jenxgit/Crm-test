@@ -614,3 +614,14 @@ textarea { resize: vertical; min-height: 70px; }
   body.has-drawer .drawer-panel { width: auto; height: auto; box-shadow: none; animation: none; }
   body.has-drawer .drawer-body { overflow: visible; padding: 0; }
 }
+
+/* Hostess & driver, group holds and waitlist: three equal boxes across the page. */
+.tour-boxes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .tour-boxes { grid-template-columns: minmax(0, 1fr); }
+}

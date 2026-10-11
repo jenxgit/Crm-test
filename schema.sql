@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS bookings (
   cancelled_date TEXT,
   cancel_note TEXT,
   cancelled_room_id INTEGER, -- room they were in, so Reactivate can put them back
-  cancelled_room_type TEXT
+  cancelled_room_type TEXT,
+  group_id INTEGER -- the group hold they belong to (tour_groups), if any
 );
 
 -- The bank ledger: every payment received and every transfer out (negative amount).
@@ -137,3 +138,17 @@ CREATE TABLE IF NOT EXISTS tour_waitlist (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tour_waitlist_tour ON tour_waitlist(tour_id);
+
+-- A group leader's hold on a tour: seats and rooms set aside until names come in. Passengers
+-- assigned to the group (bookings.group_id) fill the hold automatically.
+CREATE TABLE IF NOT EXISTS tour_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tour_id INTEGER NOT NULL REFERENCES tours(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, -- leader or group name
+  seats INTEGER NOT NULL DEFAULT 0, -- seats held
+  rooms INTEGER NOT NULL DEFAULT 0, -- rooms held
+  contact_id INTEGER REFERENCES customers(id), -- who to deal with for this group
+  note TEXT, -- single free-text line
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tour_groups_tour ON tour_groups(tour_id);
