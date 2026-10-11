@@ -120,7 +120,7 @@ export default function PaymentsList() {
       </div>
 
       {error && (
-        <div style={{ background: "#FDECEA", color: "#B42318", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
+        <div style={{ background: "#FCEBE7", color: "#A4361F", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
           {error}
         </div>
       )}
@@ -159,7 +159,7 @@ export default function PaymentsList() {
                   </td>
                   <td>{p.description || "—"}</td>
                   <td>{p.method || "—"}</td>
-                  <td style={{ color: p.amount < 0 ? "#B42318" : "#1C1D21" }}>{money(p.amount)}</td>
+                  <td style={{ color: p.amount < 0 ? "#A4361F" : "#1C1D21" }}>{money(p.amount)}</td>
                   <td>{p.runningBalance != null ? money(p.runningBalance) : "—"}</td>
                   <td>{p.bankedDate || "—"}</td>
                   <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>

@@ -97,6 +97,13 @@ export const bookings = sqliteTable("bookings", {
   tourId: integer("tour_id").notNull(),
   roomId: integer("room_id"), // null = not yet assigned to a room
   invoiceId: integer("invoice_id"), // null = not yet invoiced
+  // A cancelled passenger stays on the tour record (and on their invoice, flagged) but takes no
+  // seat or bed. Status is per passenger, so one person in a shared room can cancel alone.
+  status: text("status", { enum: ["active", "cancelled"] }).notNull().default("active"),
+  cancelledDate: text("cancelled_date"), // YYYY-MM-DD
+  cancelNote: text("cancel_note"),
+  cancelledRoomId: integer("cancelled_room_id"), // the room they were in, so Reactivate can return them
+  cancelledRoomType: text("cancelled_room_type"),
   createdAt: text("created_at").default(sql`(datetime('now'))`),
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
 });
@@ -114,6 +121,38 @@ export const payments = sqliteTable("payments", {
   bankedDate: text("banked_date"), // when it actually hit the bank, for reconciling
   createdAt: text("created_at").default(sql`(datetime('now'))`),
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
+});
+
+// Optional split of one customer payment across the passengers on its invoice. A payment with
+// no rows here is treated as an even split across the invoice's bookings.
+export const paymentAllocations = sqliteTable("payment_allocations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  paymentId: integer("payment_id").notNull(),
+  bookingId: integer("booking_id").notNull(),
+  amount: real("amount").notNull(),
+});
+
+// Hostess / driver travelling with a tour. Each takes their own room (added to the tour's room
+// count) but no passenger seat.
+export const STAFF_ROLES = ["Hostess", "Driver"] as const;
+export const tourStaff = sqliteTable("tour_staff", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tourId: integer("tour_id").notNull(),
+  role: text("role", { enum: STAFF_ROLES }).notNull(),
+  name: text("name"),
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+});
+
+// Customers waiting for a seat on a tour. Uses neither seats nor rooms.
+export const tourWaitlist = sqliteTable("tour_waitlist", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tourId: integer("tour_id").notNull(),
+  customerId: integer("customer_id").notNull(),
+  dateAdded: text("date_added").notNull(), // YYYY-MM-DD
+  pax: integer("pax").notNull().default(1),
+  note: text("note"),
+  done: integer("done", { mode: "boolean" }).notNull().default(false), // dealt with: shown struck through
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
 });
 
 export type Customer = typeof customers.$inferSelect;

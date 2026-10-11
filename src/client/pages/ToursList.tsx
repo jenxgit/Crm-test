@@ -111,7 +111,7 @@ export default function ToursList() {
       </div>
 
       {error && (
-        <div style={{ background: "#FDECEA", color: "#B42318", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
+        <div style={{ background: "#FCEBE7", color: "#A4361F", padding: "8px 12px", borderRadius: 8, marginBottom: 12 }}>
           {error}
         </div>
       )}

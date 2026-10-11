@@ -13,6 +13,7 @@
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
+    "@fortune-sheet/react": "^1.0.4",
     "docx": "^9.7.2",
     "docxtemplater": "^3.71.0",
     "hono": "^4.6.0",
