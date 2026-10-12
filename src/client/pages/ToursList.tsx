@@ -29,6 +29,8 @@ export default function ToursList() {
   const [edit, setEdit] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [when, setWhen] = useState<"all" | "upcoming" | "past">("all");
 
   const load = (silent = false) => {
     if (!silent) setLoading(true);
@@ -88,14 +90,37 @@ export default function ToursList() {
     }
   };
 
+  // Search matches code, name, dates and year; "past" means the tour has already returned.
+  const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local time
+  const q = query.trim().toLowerCase();
+  const filtered = tours.filter((t) => {
+    if (when === "upcoming" && t.returnDate < today) return false;
+    if (when === "past" && t.returnDate >= today) return false;
+    if (!q) return true;
+    return [t.tourCode, t.tourName, t.departureDate, t.returnDate].some((s) => (s ?? "").toLowerCase().includes(q));
+  });
+  const filtering = q !== "" || when !== "all";
+
   return (
     <div>
       <div className="page-header">
         <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
           <h1>Tours</h1>
-          <span className="muted">{tours.length} tours</span>
+          <span className="muted">{filtering ? `${filtered.length} of ${tours.length} tours` : `${tours.length} tours`}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <input
+            type="search"
+            placeholder="Search code, name, date…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            style={{ width: 240, padding: "10px 14px", borderRadius: 10, font: "inherit", fontSize: 14 }}
+          />
+          <select value={when} onChange={(e) => setWhen(e.target.value as typeof when)} title="Filter by tour dates">
+            <option value="all">All tours</option>
+            <option value="upcoming">Upcoming &amp; current</option>
+            <option value="past">Past</option>
+          </select>
           {edit && <span className="muted">Changes save when you leave a cell. Grey columns are calculated.</span>}
           <button
             className={edit ? "btn btn-primary" : "btn btn-secondary"}
@@ -121,6 +146,8 @@ export default function ToursList() {
           <div className="empty-state">Loading&hellip;</div>
         ) : tours.length === 0 ? (
           <div className="empty-state">No tours yet. Add your first one.</div>
+        ) : filtered.length === 0 ? (
+          <div className="empty-state">No tours match your search.</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table>
@@ -145,7 +172,7 @@ export default function ToursList() {
                 </tr>
               </thead>
               <tbody>
-                {tours.map((t) => {
+                {filtered.map((t) => {
                   const hasTotal = t.price != null || t.singleSupp != null;
                   const ed = (field: EditField, value: string | number | null, width: number, type?: string) => (
                     <td style={{ padding: "4px 6px" }}>

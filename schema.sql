@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   customer_id INTEGER NOT NULL REFERENCES customers(id),
   task TEXT NOT NULL,
+  completed_at TEXT, -- NULL while open; set when marked done
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   invoice_number TEXT NOT NULL UNIQUE,
   primary_contact_id INTEGER REFERENCES customers(id), -- the "To:" contact on the receipt
   due_date TEXT,
+  to_line TEXT, -- optional extra line above the contact in "To:" (e.g. a group name)
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );

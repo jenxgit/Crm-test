@@ -72,6 +72,9 @@ export default function InvoiceReceipt({
   const [editingDue, setEditingDue] = useState(false);
   const [dueDraft, setDueDraft] = useState("");
 
+  const [editingToLine, setEditingToLine] = useState(false);
+  const [toLineDraft, setToLineDraft] = useState("");
+
   const [editingContact, setEditingContact] = useState(false);
   const [contactChoice, setContactChoice] = useState("");
   const [otherContactPick, setOtherContactPick] = useState("");
@@ -123,6 +126,11 @@ export default function InvoiceReceipt({
   const saveDue = async () => {
     await act(() => api.invoices.update(invoice.id, { dueDate: dueDraft || null }));
     setEditingDue(false);
+  };
+
+  const saveToLine = async () => {
+    await act(() => api.invoices.update(invoice.id, { toLine: toLineDraft.trim() || null }));
+    setEditingToLine(false);
   };
 
   const openContactEditor = () => {
@@ -277,6 +285,7 @@ export default function InvoiceReceipt({
     rows.push(["Invoice Number", invoice.invoiceNumber]);
     rows.push(["Tour", `${invoice.tourCode ?? ""} ${invoice.tourName ?? ""}`.trim()]);
     rows.push(["Departure", fmt(invoice.departureDate)]);
+    if (invoice.toLine) rows.push(["To (group)", invoice.toLine]);
     rows.push(["To", invoice.primaryContact ? contactName(invoice.primaryContact) : ""]);
     rows.push([]);
 
@@ -469,6 +478,7 @@ export default function InvoiceReceipt({
             letterheadDetails,
             spacer(),
             new Paragraph({ children: [new TextRun({ text: "To:", bold: true })] }),
+            ...(invoice.toLine ? [new Paragraph({ children: [new TextRun({ text: invoice.toLine, bold: true })] })] : []),
             ...(invoice.primaryContact
               ? [
                   new Paragraph(contactName(invoice.primaryContact)),
@@ -676,6 +686,49 @@ export default function InvoiceReceipt({
         {/* To: */}
         <div style={{ marginTop: 24 }}>
           <div style={{ fontWeight: 700, marginBottom: 4 }}>To:</div>
+          {editingToLine ? (
+            <form
+              className="no-print"
+              style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveToLine();
+              }}
+            >
+              <input
+                autoFocus
+                placeholder="e.g. group name"
+                value={toLineDraft}
+                onChange={(e) => setToLineDraft(e.target.value)}
+                style={{ width: 280, fontSize: 13 }}
+              />
+              <button type="submit" className="btn btn-primary" style={{ padding: "2px 8px", fontSize: 11 }}>
+                Save
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                onClick={() => setEditingToLine(false)}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
+              {invoice.toLine && <div style={{ fontWeight: 700 }}>{invoice.toLine}</div>}
+              <button
+                className="btn btn-secondary no-print"
+                style={{ padding: "0 6px", fontSize: 11, marginBottom: 2 }}
+                onClick={() => {
+                  setToLineDraft(invoice.toLine ?? "");
+                  setEditingToLine(true);
+                }}
+              >
+                {invoice.toLine ? "edit line" : "+ Add line"}
+              </button>
+            </div>
+          )}
           {invoice.primaryContact ? (
             <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
               <div>

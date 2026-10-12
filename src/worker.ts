@@ -82,9 +82,12 @@ app.get("/api/customers/:id", async (c) => {
       returnDate: tours.returnDate,
       numDays: tours.numDays,
       price: tours.price,
+      invoiceId: bookings.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
     })
     .from(bookings)
     .innerJoin(tours, eq(bookings.tourId, tours.id))
+    .leftJoin(invoices, eq(bookings.invoiceId, invoices.id))
     .where(eq(bookings.customerId, id));
 
   const customerTasks = await db(c.env).select().from(tasks).where(eq(tasks.customerId, id));
@@ -461,6 +464,7 @@ app.get("/api/tasks", async (c) => {
       id: tasks.id,
       task: tasks.task,
       createdAt: tasks.createdAt,
+      completedAt: tasks.completedAt,
       customerId: customers.id,
       firstName: customers.firstName,
       lastName: customers.lastName,
@@ -485,7 +489,14 @@ app.put("/api/tasks/:id", async (c) => {
   const body = await c.req.json();
   const [updated] = await db(c.env)
     .update(tasks)
-    .set({ task: body.task, updatedAt: new Date().toISOString() })
+    .set({
+      // body.task edits the text; body.completed true/false marks done / reopens.
+      ...(typeof body.task === "string" ? { task: body.task } : {}),
+      ...(typeof body.completed === "boolean"
+        ? { completedAt: body.completed ? new Date().toISOString() : null }
+        : {}),
+      updatedAt: new Date().toISOString(),
+    })
     .where(eq(tasks.id, id))
     .returning();
   if (!updated) return c.json({ error: "Not found" }, 404);
@@ -954,6 +965,8 @@ app.put("/api/invoices/:id", async (c) => {
         invoiceNumber: body.invoiceNumber !== undefined ? String(body.invoiceNumber).trim() : undefined,
         primaryContactId: body.primaryContactId,
         dueDate: body.dueDate,
+        // Blank clears the line; undefined leaves it unchanged.
+        toLine: body.toLine === undefined ? undefined : String(body.toLine ?? "").trim() || null,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(invoices.id, id))

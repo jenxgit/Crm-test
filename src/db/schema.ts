@@ -56,6 +56,7 @@ export const tasks = sqliteTable("tasks", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   customerId: integer("customer_id").notNull(),
   task: text("task").notNull(), // multi-line free text
+  completedAt: text("completed_at"), // null while open
   createdAt: text("created_at").default(sql`(datetime('now'))`),
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
 });
@@ -76,6 +77,7 @@ export const invoices = sqliteTable("invoices", {
   invoiceNumber: text("invoice_number").notNull().unique(),
   primaryContactId: integer("primary_contact_id"), // the "To:" contact on the receipt
   dueDate: text("due_date"),
+  toLine: text("to_line"), // optional extra line above the contact in "To:" (e.g. a group name)
   createdAt: text("created_at").default(sql`(datetime('now'))`),
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
 });

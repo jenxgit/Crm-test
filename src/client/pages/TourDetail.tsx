@@ -1065,9 +1065,12 @@ export default function TourDetail() {
   const [newRoomType, setNewRoomType] = useState<RoomType>("Twin");
   const [adding, setAdding] = useState<number | "unassigned" | null>(null);
   const [pick, setPick] = useState("");
+  const [newCust, setNewCust] = useState<{ firstName: string; lastName: string; mobile: string } | null>(null);
   const [edit, setEdit] = useState(false);
   const [confirmDeleteRoom, setConfirmDeleteRoom] = useState<number | null>(null);
   const [openInvoice, setOpenInvoice] = useState<number | null>(null);
+  // Edit-tour-details dialog: every field is held as text while editing.
+  const [editTour, setEditTour] = useState<Record<string, string> | null>(null);
   // Passenger being cancelled / deleted (dialogs below), and the cancel form values.
   const [cancelTarget, setCancelTarget] = useState<{ bookingId: number; name: string } | null>(null);
   const [cancelDate, setCancelDate] = useState("");
@@ -1083,6 +1086,10 @@ export default function TourDetail() {
     load();
     api.customers.list().then(setCustomers);
   }, [tourId]);
+
+  useEffect(() => {
+    setNewCust(null); // opening a different add row starts back at the search box
+  }, [adding]);
 
   // The notes JSON this page last sent to the server, and a queue so saves go out in order.
   const lastSavedNotes = useRef<string | null>(null);
@@ -1144,6 +1151,48 @@ export default function TourDetail() {
     act(() => api.customers.update(customerId, { [field]: value.trim() === "" ? null : value.trim() } as Partial<Customer>));
   };
 
+  const openEditTour = () =>
+    setEditTour({
+      tourCode: tour.tourCode ?? "",
+      tourName: tour.tourName,
+      departureDate: tour.departureDate,
+      returnDate: tour.returnDate,
+      price: tour.price != null ? String(tour.price) : "",
+      singleSupp: tour.singleSupp != null ? String(tour.singleSupp) : "",
+      seats: tour.seats != null ? String(tour.seats) : "",
+      numRooms: tour.numRooms != null ? String(tour.numRooms) : "",
+      pay1Date: tour.pay1Date ?? "",
+      pay2Date: tour.pay2Date ?? "",
+    });
+  const saveTour = async () => {
+    if (!editTour) return;
+    const e = editTour;
+    if (!e.tourName.trim() || !e.departureDate || !e.returnDate) {
+      setError("Tour name, departure date and return date are required");
+      return;
+    }
+    if (e.returnDate < e.departureDate) {
+      setError("The return date can't be before the departure date");
+      return;
+    }
+    const num = (v: string) => (v.trim() === "" ? null : Number(v));
+    setEditTour(null);
+    await act(() =>
+      api.tours.update(tourId, {
+        tourCode: e.tourCode.trim() || null,
+        tourName: e.tourName.trim(),
+        departureDate: e.departureDate,
+        returnDate: e.returnDate,
+        price: num(e.price),
+        singleSupp: num(e.singleSupp),
+        seats: num(e.seats),
+        numRooms: num(e.numRooms),
+        pay1Date: e.pay1Date || null,
+        pay2Date: e.pay2Date || null,
+      }),
+    );
+  };
+
   const openCancel = (bookingId: number, name: string, date?: string | null, note?: string | null) => {
     setCancelTarget({ bookingId, name });
     setCancelDate(date || localDate());
@@ -1169,6 +1218,25 @@ export default function TourDetail() {
       return;
     }
     await act(() => api.bookings.create({ customerId: match.id, tourId, roomId }));
+    setPick("");
+    setAdding(null);
+  };
+
+  // Create a brand-new customer from the add row, then book them straight onto the tour.
+  const addNewPassenger = async (roomId: number | null) => {
+    if (!newCust) return;
+    const firstName = newCust.firstName.trim();
+    const lastName = newCust.lastName.trim();
+    if (!firstName || !lastName) {
+      setError("First and last name are required");
+      return;
+    }
+    await act(async () => {
+      const created = await api.customers.create({ firstName, lastName, mobile: newCust.mobile.trim() || null });
+      api.customers.list().then(setCustomers);
+      await api.bookings.create({ customerId: created.id, tourId, roomId });
+    });
+    setNewCust(null);
     setPick("");
     setAdding(null);
   };
@@ -1243,6 +1311,36 @@ export default function TourDetail() {
     adding === key ? (
       <tr key={`add-${key}`} style={{ borderTop: rowBorder }}>
         <td colSpan={wide ? COLS : COLS - 3} style={{ ...cell, background: "#FAFAF8" }}>
+          {newCust ? (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+              <input
+                placeholder="First name"
+                value={newCust.firstName}
+                onChange={(e) => setNewCust({ ...newCust, firstName: e.target.value })}
+                style={{ width: 150 }}
+                autoFocus
+              />
+              <input
+                placeholder="Last name"
+                value={newCust.lastName}
+                onChange={(e) => setNewCust({ ...newCust, lastName: e.target.value })}
+                style={{ width: 150 }}
+              />
+              <input
+                placeholder="Mobile (optional)"
+                value={newCust.mobile}
+                onChange={(e) => setNewCust({ ...newCust, mobile: e.target.value })}
+                style={{ width: 150 }}
+              />
+              <button className="btn btn-primary" style={{ padding: "4px 12px" }} onClick={() => addNewPassenger(roomId)}>
+                Create &amp; add
+              </button>
+              <button className="btn btn-secondary" style={{ padding: "4px 12px" }} onClick={() => setNewCust(null)}>
+                Back to search
+              </button>
+            </div>
+          ) : (
+          <>
           <input
             list="available-customers"
             placeholder="Search customer (surname, first name)"
@@ -1254,9 +1352,29 @@ export default function TourDetail() {
           <button className="btn btn-primary" style={{ padding: "4px 12px" }} onClick={() => addPassenger(roomId)}>
             Add
           </button>{" "}
-          <button className="btn btn-secondary" style={{ padding: "4px 12px" }} onClick={() => setAdding(null)}>
+          <button
+            className="btn btn-secondary"
+            style={{ padding: "4px 12px", marginRight: 8 }}
+            onClick={() => {
+              // Pre-fill from what was typed: "Surname, First" or just a surname.
+              const [last, first] = pick.split(",").map((s) => s.trim());
+              setNewCust({ firstName: first ?? "", lastName: last ?? "", mobile: "" });
+            }}
+          >
+            + New customer
+          </button>
+          <button
+            className="btn btn-secondary"
+            style={{ padding: "4px 12px" }}
+            onClick={() => {
+              setAdding(null);
+              setNewCust(null);
+            }}
+          >
             Cancel
           </button>
+          </>
+          )}
         </td>
       </tr>
     ) : null;
@@ -1275,6 +1393,9 @@ export default function TourDetail() {
             <span className="muted">
               {formatDob(tour.departureDate)} → {formatDob(tour.returnDate)} · {tour.numDays} days
             </span>
+            <button className="btn btn-secondary" style={{ padding: "2px 10px", fontSize: 12 }} onClick={openEditTour}>
+              Edit details
+            </button>
           </div>
           <div className="tour-meters">
             <div className="meter-item">
@@ -1639,6 +1760,102 @@ export default function TourDetail() {
         onReactivate={(bookingId) => act(() => api.bookings.reactivate(bookingId))}
         onDelete={(e) => setDeleteTarget({ bookingId: e.bookingId, name: `${e.firstName} ${e.lastName}` })}
       />
+
+      {editTour && (
+        <div className="modal-backdrop" onClick={() => setEditTour(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Edit tour details</h2>
+            <div className="form-grid">
+              <label>
+                Tour code
+                <input value={editTour.tourCode} onChange={(e) => setEditTour({ ...editTour, tourCode: e.target.value })} />
+              </label>
+              <label>
+                Tour name
+                <input
+                  autoFocus
+                  value={editTour.tourName}
+                  onChange={(e) => setEditTour({ ...editTour, tourName: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="form-grid">
+              <label>
+                Departure date
+                <input
+                  type="date"
+                  value={editTour.departureDate}
+                  onChange={(e) => setEditTour({ ...editTour, departureDate: e.target.value })}
+                />
+              </label>
+              <label>
+                Return date
+                <input
+                  type="date"
+                  value={editTour.returnDate}
+                  onChange={(e) => setEditTour({ ...editTour, returnDate: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="form-grid">
+              <label>
+                Price per person ($)
+                <input type="number" step="0.01" value={editTour.price} onChange={(e) => setEditTour({ ...editTour, price: e.target.value })} />
+              </label>
+              <label>
+                Single supplement ($)
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editTour.singleSupp}
+                  onChange={(e) => setEditTour({ ...editTour, singleSupp: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="form-grid">
+              <label>
+                Seats
+                <input type="number" min={0} value={editTour.seats} onChange={(e) => setEditTour({ ...editTour, seats: e.target.value })} />
+              </label>
+              <label>
+                Rooms
+                <input
+                  type="number"
+                  min={0}
+                  value={editTour.numRooms}
+                  onChange={(e) => setEditTour({ ...editTour, numRooms: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="form-grid">
+              <label>
+                Payment 1 due
+                <input
+                  type="date"
+                  value={editTour.pay1Date}
+                  onChange={(e) => setEditTour({ ...editTour, pay1Date: e.target.value })}
+                />
+              </label>
+              <label>
+                Payment 2 due
+                <input
+                  type="date"
+                  value={editTour.pay2Date}
+                  onChange={(e) => setEditTour({ ...editTour, pay2Date: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-secondary" onClick={() => setEditTour(null)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={saveTour}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {cancelTarget && (
         <div className="modal-backdrop" onClick={() => setCancelTarget(null)}>

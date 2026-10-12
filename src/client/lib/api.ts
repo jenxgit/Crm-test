@@ -49,12 +49,15 @@ export type Booking = {
   returnDate: string;
   numDays: number;
   price: number | null;
+  invoiceId: number | null;
+  invoiceNumber: string | null;
 };
 
 export type Task = {
   id: number;
   task: string;
   createdAt: string;
+  completedAt: string | null;
   customerId: number;
   firstName?: string;
   lastName?: string;
@@ -208,6 +211,7 @@ export type PaymentEntry = {
 };
 
 export type InvoiceDetail = InvoiceSummary & {
+  toLine: string | null;
   payments: PaymentEntry[];
   lineItems: InvoiceLineItem[];
   departureDate: string | null;
@@ -277,8 +281,8 @@ export const api = {
     list: () => request<Task[]>("/api/tasks"),
     create: (data: { customerId: number; task: string }) =>
       request<Task>("/api/tasks", { method: "POST", body: JSON.stringify(data) }),
-    update: (id: number, task: string) =>
-      request<Task>(`/api/tasks/${id}`, { method: "PUT", body: JSON.stringify({ task }) }),
+    update: (id: number, data: { task?: string; completed?: boolean }) =>
+      request<Task>(`/api/tasks/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     remove: (id: number) => request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
   },
   groups: {
@@ -336,7 +340,7 @@ export const api = {
     get: (id: number) => request<InvoiceDetail>(`/api/invoices/${id}`),
     create: (data: { invoiceNumber: string; bookingIds: number[]; primaryContactId?: number | null; dueDate?: string | null }) =>
       request<{ id: number; invoiceNumber: string }>("/api/invoices", { method: "POST", body: JSON.stringify(data) }),
-    update: (id: number, data: { invoiceNumber?: string; primaryContactId?: number | null; dueDate?: string | null }) =>
+    update: (id: number, data: { invoiceNumber?: string; primaryContactId?: number | null; dueDate?: string | null; toLine?: string | null }) =>
       request<{ id: number; invoiceNumber: string }>(`/api/invoices/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     remove: (id: number) => request<void>(`/api/invoices/${id}`, { method: "DELETE" }),
     addItem: (invoiceId: number, description: string, amount: number) =>
